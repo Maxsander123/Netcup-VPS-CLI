@@ -941,7 +941,7 @@ def install_images(server, apps, as_json):
 @click.option("--ssh-password/--no-ssh-password", default=True, show_default=True,
               help="Allow SSH password authentication.")
 @click.option("--script",           default="", help="Custom cloud-init bash script (inline string).")
-@click.option("--cloud-init-file",  default="", type=click.Path(exists=True),
+@click.option("--cloud-init-file",  default=None, type=click.Path(exists=True),
               help="Path to a cloud-init YAML or bash script file (alternative to --script).")
 @click.option("--full-disk/--no-full-disk", default=True, show_default=True,
               help="Use full disk for root partition.")
