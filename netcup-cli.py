@@ -1230,34 +1230,36 @@ def update():
 
     asset_url = None
     for asset in release.get("assets", []):
-        if asset["name"] == "netcup-cli.py":
+        if asset["name"].endswith(".deb"):
             asset_url = asset["browser_download_url"]
             break
 
     if not asset_url:
-        console.print("[red]netcup-cli.py not found in latest release assets.[/red]")
+        console.print("[red]No .deb found in latest release.[/red]")
         sys.exit(1)
 
-    script_path = Path(__file__).resolve()
     console.print(f"Downloading v{latest} ...")
 
+    import tempfile, subprocess
     try:
         dl_req = urllib.request.Request(asset_url, headers={"User-Agent": "netcup-cli"})
-        with urllib.request.urlopen(dl_req, timeout=30) as r:
-            new_script = r.read()
+        with tempfile.NamedTemporaryFile(suffix=".deb", delete=False) as f:
+            with urllib.request.urlopen(dl_req, timeout=60) as r:
+                f.write(r.read())
+            deb_path = f.name
     except Exception as e:
         console.print(f"[red]Download failed:[/red] {e}")
         sys.exit(1)
 
-    tmp = script_path.with_suffix(".tmp")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o755)
-    try:
-        os.write(fd, new_script)
-    finally:
-        os.close(fd)
-    tmp.replace(script_path)
+    console.print(f"Installing v{latest} (requires sudo) ...")
+    result = subprocess.run(["sudo", "apt", "install", "-y", deb_path])
+    Path(deb_path).unlink(missing_ok=True)
 
-    console.print(f"[green]✓[/green] Updated to v{latest}. Changes take effect on next run.")
+    if result.returncode == 0:
+        console.print(f"[green]✓[/green] Updated to v{latest}.")
+    else:
+        console.print("[red]Installation failed.[/red]")
+        sys.exit(1)
 
 
 # ── auto man pages ────────────────────────────────────────────────────────────
