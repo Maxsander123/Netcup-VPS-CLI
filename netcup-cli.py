@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Netcup VPS CLI — manage Netcup VPS via the SCP REST API."""
 
+import atexit
+import ipaddress
 import json
+import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -34,9 +38,15 @@ def load_creds() -> dict:
 
 
 def save_creds(data: dict) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CREDS_FILE.write_text(json.dumps(data, indent=2))
-    CREDS_FILE.chmod(0o600)
+    CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # Write atomically with 0o600 from the start — no chmod race
+    tmp = CREDS_FILE.with_suffix(".tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, json.dumps(data, indent=2).encode())
+    finally:
+        os.close(fd)
+    tmp.replace(CREDS_FILE)
 
 
 def get_access_token() -> str:
@@ -47,7 +57,11 @@ def get_access_token() -> str:
         "refresh_token": creds["refresh_token"],
     })
     if not resp.ok:
-        console.print(f"[red]Token refresh failed (re-run login):[/red] {resp.text}")
+        try:
+            msg = resp.json().get("error_description", resp.json().get("error", "unknown"))
+        except Exception:
+            msg = str(resp.status_code)
+        console.print(f"[red]Token refresh failed (re-run login):[/red] {msg}")
         sys.exit(1)
     tok = resp.json()
     if "refresh_token" in tok:
@@ -108,6 +122,31 @@ def resolve(name_or_id: str) -> int:
     console.print(f"[red]Server not found:[/red] {name_or_id}")
     sys.exit(1)
 
+def _validate_path_segment(value: str, name: str) -> None:
+    """Reject values that could cause API path traversal."""
+    if "/" in value or ".." in value or "\x00" in value:
+        console.print(f"[red]Invalid {name}:[/red] must not contain '/', '..', or null bytes.")
+        sys.exit(1)
+
+def _validate_mac(mac: str) -> None:
+    if not re.fullmatch(r"([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", mac):
+        console.print(f"[red]Invalid MAC address:[/red] {mac}")
+        sys.exit(1)
+
+def _validate_ipv4(ip: str) -> None:
+    try:
+        ipaddress.IPv4Address(ip)
+    except ValueError:
+        console.print(f"[red]Invalid IPv4 address:[/red] {ip}")
+        sys.exit(1)
+
+def _validate_ipv6_prefix(prefix: str) -> None:
+    try:
+        ipaddress.ip_network(prefix, strict=False)
+    except ValueError:
+        console.print(f"[red]Invalid IPv6 prefix:[/red] {prefix}")
+        sys.exit(1)
+
 def _state(s: dict) -> str:
     return s.get("serverLiveInfo", {}).get("state", "?")
 
@@ -143,7 +182,7 @@ def wait_task(task_uuid: str, label: str = "Task") -> dict:
 # ── CLI root ──────────────────────────────────────────────────────────────────
 
 @click.group()
-@click.version_option("1.3.0", prog_name="netcup-cli")
+@click.version_option("1.4.0", prog_name="netcup-cli")
 def cli():
     """Netcup VPS CLI — control your Netcup VPS from the terminal."""
 
@@ -418,6 +457,7 @@ def disks_list(server, as_json):
 @click.option("--json", "as_json", is_flag=True)
 def disks_get(server, disk, as_json):
     """Show details for DISK on SERVER."""
+    _validate_path_segment(disk, "disk name")
     sid  = resolve(server)
     data = api_get(f"/servers/{sid}/disks/{disk}")
     if as_json:
@@ -495,6 +535,7 @@ def snap_create(server, name, disk, wait):
 @click.option("--wait", is_flag=True)
 def snap_delete(server, name, force, wait):
     """Delete snapshot NAME from SERVER."""
+    _validate_path_segment(name, "snapshot name")
     if not force and not Confirm.ask(f"[red]Delete[/red] snapshot [bold]{name}[/bold] on {server}?"): return
     sid    = resolve(server)
     result = api_delete(f"/servers/{sid}/snapshots/{name}")
@@ -659,6 +700,7 @@ def net_add(server, vlan, driver):
 @click.option("-f", "--force", is_flag=True)
 def net_remove(server, mac, force):
     """Remove interface by MAC from SERVER."""
+    _validate_mac(mac)
     if not force and not Confirm.ask(f"Remove [bold]{mac}[/bold] from {server}?"): return
     sid = resolve(server)
     api_delete(f"/servers/{sid}/interfaces/{mac}")
@@ -675,6 +717,7 @@ def rdns():
 @click.argument("ip")
 def rdns_get(ip):
     """Get rDNS for IPv4 IP."""
+    _validate_ipv4(ip)
     data = api_get(f"/rdns/ipv4/{ip}")
     console.print(data.get("rdns") or "[dim]no rDNS set[/dim]")
 
@@ -684,6 +727,7 @@ def rdns_get(ip):
 @click.argument("hostname")
 def rdns_set(ip, hostname):
     """Set rDNS for IPv4 IP."""
+    _validate_ipv4(ip)
     api_put(f"/rdns/ipv4/{ip}", {"hostname": hostname})
     console.print(f"[green]✓[/green] rDNS {ip} → {hostname}")
 
@@ -693,6 +737,7 @@ def rdns_set(ip, hostname):
 @click.option("-f", "--force", is_flag=True)
 def rdns_delete(ip, force):
     """Delete rDNS for IPv4 IP."""
+    _validate_ipv4(ip)
     if not force and not Confirm.ask(f"Delete rDNS for [bold]{ip}[/bold]?"): return
     api_delete(f"/rdns/ipv4/{ip}")
     console.print(f"[green]✓[/green] rDNS for {ip} deleted.")
@@ -702,6 +747,7 @@ def rdns_delete(ip, force):
 @click.argument("prefix")
 def rdns_get6(prefix):
     """Get rDNS for IPv6 PREFIX."""
+    _validate_ipv6_prefix(prefix)
     data = api_get(f"/rdns/ipv6/{prefix}")
     console.print(data.get("rdns") or "[dim]no rDNS set[/dim]")
 
@@ -711,6 +757,7 @@ def rdns_get6(prefix):
 @click.argument("hostname")
 def rdns_set6(prefix, hostname):
     """Set rDNS for IPv6 PREFIX."""
+    _validate_ipv6_prefix(prefix)
     api_put(f"/rdns/ipv6/{prefix}", {"hostname": hostname})
     console.print(f"[green]✓[/green] rDNS {prefix} → {hostname}")
 
@@ -720,6 +767,7 @@ def rdns_set6(prefix, hostname):
 @click.option("-f", "--force", is_flag=True)
 def rdns_delete6(prefix, force):
     """Delete rDNS for IPv6 PREFIX."""
+    _validate_ipv6_prefix(prefix)
     if not force and not Confirm.ask(f"Delete rDNS for [bold]{prefix}[/bold]?"): return
     api_delete(f"/rdns/ipv6/{prefix}")
     console.print(f"[green]✓[/green] rDNS for {prefix} deleted.")
@@ -751,17 +799,27 @@ def _get_user_id() -> int:
     """Decode user ID from JWT access token payload."""
     import base64 as _b64
     token = get_access_token()
-    payload_b64 = token.split('.')[1]
-    payload_b64 += '=' * (4 - len(payload_b64) % 4)
-    payload = json.loads(_b64.urlsafe_b64decode(payload_b64))
+    try:
+        payload_b64 = token.split('.')[1]
+        payload_b64 += '=' * (4 - len(payload_b64) % 4)
+        payload = json.loads(_b64.urlsafe_b64decode(payload_b64))
+    except Exception:
+        console.print("[red]Failed to decode JWT payload.[/red]")
+        sys.exit(1)
     uid = payload.get("userId") or payload.get("user_id")
     if uid:
-        return int(uid)
+        try:
+            return int(uid)
+        except (ValueError, TypeError):
+            pass
     # fallback: iterate known claim names
     for key in ("sub", "id", "userId", "user_id"):
         val = payload.get(key)
         if val and str(val).isdigit():
-            return int(val)
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                continue
     console.print(f"[red]Could not determine user ID from JWT.[/red] Claims: {list(payload.keys())}")
     sys.exit(1)
 
@@ -833,6 +891,9 @@ def install_run(server, image_id, hostname, locale, timezone, user, user_pass,
     WARNING: This will ERASE all data on the server!
     """
     sid = resolve(server)
+
+    if script:
+        console.print("[yellow bold]WARNING:[/yellow bold] --script runs arbitrary bash as root on the new system. Review its contents before proceeding.")
 
     if not force:
         console.print(f"[red bold]WARNING:[/red bold] All data on [bold]{server}[/bold] will be erased!")
@@ -984,7 +1045,8 @@ VNC_HTML_TEMPLATE = """\
   </div>
   <div id="screen"></div>
   <script type="module">
-    import RFB from 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.5.0/core/rfb.js';
+    import RFB from 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.5.0/core/rfb.js'
+      // integrity="sha384-O+Gv1O92p9jznqgsBMGcJcBNwGeXVT9WFlO9lmqcqTM937WM9jCVpjbiD8MYWOex" crossorigin="anonymous"
 
     const wsUrl = '{ws_url}';
     const status = document.getElementById('status');
@@ -1024,7 +1086,7 @@ def vnc(server, url_only, ws_url):
         netcup-cli vnc head-server
         netcup-cli vnc 787734 --url-only
     """
-    import tempfile, os
+    import tempfile
 
     sid   = resolve(server)
     data  = api_get(f"/servers/{sid}")
@@ -1039,18 +1101,21 @@ def vnc(server, url_only, ws_url):
 
     html = VNC_HTML_TEMPLATE.format(hostname=host, ws_url=ws)
 
-    # Write to a temp file that persists long enough for the browser to load it
-    tmp = tempfile.NamedTemporaryFile(
-        suffix=".html", prefix="netcup-vnc-", delete=False,
-        dir=str(Path.home() / ".config" / "netcup-cli"),
-        mode="w"
-    )
-    tmp.write(html)
-    tmp.close()
+    # Create temp file with 0o600 from the start — token is embedded in HTML
+    vnc_dir = Path.home() / ".config" / "netcup-cli"
+    vnc_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(suffix=".html", prefix="netcup-vnc-", dir=str(vnc_dir))
+    try:
+        os.write(fd, html.encode())
+    finally:
+        os.close(fd)
+    os.chmod(tmp_path, 0o600)
 
     console.print(f"VNC console for [bold]{host}[/bold]")
-    console.print(f"[dim]Temp page: {tmp.name}[/dim]")
-    _open_browser(f"file://{tmp.name}")
+    console.print(f"[dim]Temp page: {tmp_path}[/dim]")
+    _open_browser(f"file://{tmp_path}")
+    # Clean up after browser has had time to load the page
+    atexit.register(lambda p=tmp_path: Path(p).unlink(missing_ok=True))
 
 
 def _open_browser(url: str) -> None:
@@ -1078,7 +1143,7 @@ def list_commands(ctx):
     root = ctx.find_root()
     cli_cmd = root.command
 
-    console.print(f"\n[bold]netcup-cli[/bold] — Netcup VPS CLI v1.3.0\n")
+    console.print(f"\n[bold]netcup-cli[/bold] — Netcup VPS CLI v1.4.0\n")
 
     def print_group(cmd, prefix=""):
         if hasattr(cmd, 'commands'):
@@ -1112,7 +1177,7 @@ def gen_manpages(outdir):
     def gen(cmd, file_prefix, info_name, parent_ctx=None):
         ctx = _click.Context(cmd, info_name=info_name, parent=parent_ctx)
         fname = f"{file_prefix}.1"
-        (out / fname).write_text(generate_man_page(ctx, version="1.3.0"))
+        (out / fname).write_text(generate_man_page(ctx, version="1.4.0"))
         console.print(f"  [green]✓[/green] {fname}")
         if hasattr(cmd, 'commands'):
             for sub_name, sub_cmd in cmd.commands.items():
@@ -1124,7 +1189,7 @@ def gen_manpages(outdir):
 
 # ── auto man pages ────────────────────────────────────────────────────────────
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 _MAN_DIR     = Path.home() / ".local" / "share" / "man" / "man1"
 _MAN_STAMP   = CONFIG_DIR / ".manpage_version"
 
