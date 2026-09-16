@@ -1,22 +1,16 @@
-name: Build & Publish
+name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
-  build-deb:
+  release:
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.ver.outputs.version }}
-      deb: ${{ steps.ver.outputs.deb }}
     steps:
       - uses: actions/checkout@v4
 
@@ -25,7 +19,6 @@ jobs:
         run: |
           VERSION=$(grep -m1 'VERSION = ' netcup-cli.py | cut -d'"' -f2)
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "deb=netcup-cli_${VERSION}_all.deb" >> "$GITHUB_OUTPUT"
 
       - name: Install dpkg-dev
         run: sudo apt-get install -y dpkg-dev
@@ -33,66 +26,21 @@ jobs:
       - name: Build .deb
         run: bash build-deb.sh
 
-      - name: Upload .deb artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: deb-package
-          path: deb-build/*.deb
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: deb-build/*.deb
-          generate_release_notes: true
-
-  publish-apt-repo:
-    needs: build-deb
-    runs-on: ubuntu-latest
-    steps:
-      - name: Install dpkg-dev apt-utils
-        run: sudo apt-get install -y dpkg-dev apt-utils
-
-      - name: Download .deb artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: deb-package
-          path: pool
-
-      - name: Checkout gh-pages
-        uses: actions/checkout@v4
-        with:
-          ref: gh-pages
-          path: apt-repo
-        continue-on-error: true
-
-      - name: Init apt-repo if empty
-        run: |
-          if [ ! -d apt-repo ]; then
-            git clone --depth=1 --branch=gh-pages \
-              https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git apt-repo \
-              || (mkdir -p apt-repo && cd apt-repo && git init && git checkout -b gh-pages)
-          fi
-
-      - name: Copy .deb into repo
-        run: |
-          mkdir -p apt-repo/pool
-          cp pool/*.deb apt-repo/pool/
-
-      - name: Generate Packages and Release
-        working-directory: apt-repo
-        run: |
-          dpkg-scanpackages --multiversion pool > Packages
-          gzip -k -f Packages
-          apt-ftparchive release . > Release
-
-      - name: Commit and push apt repo
-        working-directory: apt-repo
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "apt: publish netcup-cli v${{ needs.build-deb.outputs.version }}" || echo "nothing to commit"
-          git push origin gh-pages
+      - name: Delete existing 'latest' release and tag
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes 2>/dev/null || true
+          git push origin :refs/tags/latest 2>/dev/null || true
+
+      - name: Create rolling 'latest' release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=${{ steps.ver.outputs.version }}
+          gh release create latest \
+            --title "netcup-cli v${VERSION} (latest)" \
+            --notes "Automatically built from the latest commit on main." \
+            --prerelease \
+            deb-build/netcup-cli_${VERSION}_all.deb \
+            netcup-cli.py

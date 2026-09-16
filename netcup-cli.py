@@ -182,7 +182,7 @@ def wait_task(task_uuid: str, label: str = "Task") -> dict:
 # ── CLI root ──────────────────────────────────────────────────────────────────
 
 @click.group()
-@click.version_option("1.4.0", prog_name="netcup-cli")
+@click.version_option("1.5.0", prog_name="netcup-cli")
 def cli():
     """Netcup VPS CLI — control your Netcup VPS from the terminal."""
 
@@ -1143,7 +1143,7 @@ def list_commands(ctx):
     root = ctx.find_root()
     cli_cmd = root.command
 
-    console.print(f"\n[bold]netcup-cli[/bold] — Netcup VPS CLI v1.4.0\n")
+    console.print(f"\n[bold]netcup-cli[/bold] — Netcup VPS CLI v1.5.0\n")
 
     def print_group(cmd, prefix=""):
         if hasattr(cmd, 'commands'):
@@ -1177,7 +1177,7 @@ def gen_manpages(outdir):
     def gen(cmd, file_prefix, info_name, parent_ctx=None):
         ctx = _click.Context(cmd, info_name=info_name, parent=parent_ctx)
         fname = f"{file_prefix}.1"
-        (out / fname).write_text(generate_man_page(ctx, version="1.4.0"))
+        (out / fname).write_text(generate_man_page(ctx, version="1.5.0"))
         console.print(f"  [green]✓[/green] {fname}")
         if hasattr(cmd, 'commands'):
             for sub_name, sub_cmd in cmd.commands.items():
@@ -1187,9 +1187,82 @@ def gen_manpages(outdir):
     console.print(f"\n[green]Man pages written to {out}[/green]")
     console.print(f"Use: [bold]MANPATH={out.parent} man netcup-cli[/bold]")
 
+# ── self-update ───────────────────────────────────────────────────────────────
+
+GITHUB_REPO = "Maxsander123/Netcup-VPS-CLI"
+
+@cli.command()
+def update():
+    """Update netcup-cli to the latest release from GitHub.
+
+    Downloads the latest netcup-cli.py from the GitHub release and replaces
+    the currently running script in-place. Works for both apt and install.sh
+    installations.
+
+    Example:
+
+        netcup-cli update
+    """
+    import urllib.request
+
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    req = urllib.request.Request(
+        api_url,
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "netcup-cli"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            release = json.loads(r.read())
+    except Exception as e:
+        console.print(f"[red]Failed to check for updates:[/red] {e}")
+        sys.exit(1)
+
+    latest = release.get("tag_name", "").lstrip("v")
+    if not latest:
+        console.print("[red]Could not determine latest version.[/red]")
+        sys.exit(1)
+
+    if latest == VERSION:
+        console.print(f"[green]Already up to date[/green] (v{VERSION})")
+        return
+
+    console.print(f"Update available: v{VERSION} → [bold]v{latest}[/bold]")
+
+    asset_url = None
+    for asset in release.get("assets", []):
+        if asset["name"] == "netcup-cli.py":
+            asset_url = asset["browser_download_url"]
+            break
+
+    if not asset_url:
+        console.print("[red]netcup-cli.py not found in latest release assets.[/red]")
+        sys.exit(1)
+
+    script_path = Path(__file__).resolve()
+    console.print(f"Downloading v{latest} ...")
+
+    try:
+        dl_req = urllib.request.Request(asset_url, headers={"User-Agent": "netcup-cli"})
+        with urllib.request.urlopen(dl_req, timeout=30) as r:
+            new_script = r.read()
+    except Exception as e:
+        console.print(f"[red]Download failed:[/red] {e}")
+        sys.exit(1)
+
+    tmp = script_path.with_suffix(".tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o755)
+    try:
+        os.write(fd, new_script)
+    finally:
+        os.close(fd)
+    tmp.replace(script_path)
+
+    console.print(f"[green]✓[/green] Updated to v{latest}. Changes take effect on next run.")
+
+
 # ── auto man pages ────────────────────────────────────────────────────────────
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 _MAN_DIR     = Path.home() / ".local" / "share" / "man" / "man1"
 _MAN_STAMP   = CONFIG_DIR / ".manpage_version"
 
