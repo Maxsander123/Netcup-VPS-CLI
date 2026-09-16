@@ -20,7 +20,7 @@ AUTH_BASE = "https://www.servercontrolpanel.de/realms/scp/protocol/openid-connec
 API_BASE  = "https://www.servercontrolpanel.de/scp-core/api/v1"
 DEVICE_ENDPOINT = f"{AUTH_BASE}/auth/device"
 TOKEN_ENDPOINT  = f"{AUTH_BASE}/token"
-CLIENT_ID = "scp-cli"
+CLIENT_ID = "scp"
 
 CONFIG_DIR  = Path.home() / ".config" / "netcup-cli"
 CREDS_FILE  = CONFIG_DIR / "credentials.json"
