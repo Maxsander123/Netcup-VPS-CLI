@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Build artifacts
+deb-build/
+*.deb
+
+# Backups / editor
+*.bak
+*.swp
+*.orig
+*~
+
+# macOS
+.DS_Store

@@ -1,3 +1,4 @@
 click>=8.1
 requests>=2.31
 rich>=13.0
+click-man>=0.1

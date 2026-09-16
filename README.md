@@ -19,6 +19,14 @@ A full-featured CLI tool to manage Netcup VPS servers via the [SCP REST API](htt
 | **Logs** | `logs` |
 | **Tasks** | `task list`, `task get` |
 
+## Update
+
+```bash
+netcup-cli update
+```
+
+Checks GitHub for a newer release, downloads the `.deb`, and installs it via `sudo apt install`.
+
 ## Installation
 
 ### Option A — apt (Ubuntu/Debian, recommended)
