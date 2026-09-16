@@ -151,7 +151,7 @@ def login():
     if "verification_uri_complete" not in data:
         console.print(f"  Enter code: [bold]{user_code}[/bold]\n")
 
-    console.print("Waiting for browser authentication", end="", flush=True)
+    print("Waiting for browser authentication", end="", flush=True)
     while True:
         time.sleep(interval)
         token_resp = requests.post(TOKEN_ENDPOINT, data={
@@ -161,13 +161,13 @@ def login():
         })
         tok = token_resp.json()
         if token_resp.ok:
-            console.print(" [green]✓[/green]")
+            print("")
             save_creds({"refresh_token": tok["refresh_token"]})
             console.print("[green]Logged in successfully.[/green]")
             return
         err = tok.get("error", "")
         if err == "authorization_pending":
-            console.print(".", end="", flush=True)
+            print(".", end="", flush=True)
         elif err == "slow_down":
             interval += 5
         else:
