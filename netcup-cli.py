@@ -1115,154 +1115,30 @@ VNC_HTML_TEMPLATE = """\
 
 @cli.command()
 @click.argument("server")
-@click.option("--url-only", is_flag=True, help="Print WebSocket URL instead of opening browser.")
-@click.option("--ws-url", is_flag=True, help="Print raw WebSocket URL.")
-def vnc(server, url_only, ws_url):
-    """Open the VNC console for SERVER in the browser via noVNC.
+@click.option("--url-only", is_flag=True, help="Print the console URL instead of opening browser.")
+def vnc(server, url_only):
+    """Open the VNC console for SERVER in the browser.
 
-    Generates a local HTML page with noVNC embedded and opens it.
-    The access token is embedded so no SCP login is needed.
+    Opens the Netcup SCP web console directly in your default browser.
+    You must be logged in to servercontrolpanel.de in that browser.
 
     Example:
 
         netcup-cli vnc head-server
         netcup-cli vnc 787734 --url-only
     """
-    import http.server, threading, socket, ssl, hashlib, base64, tempfile, shutil
-    from urllib.parse import quote
+    sid  = resolve(server)
+    data = api_get(f"/servers/{sid}")
+    host = data.get("hostname", data.get("name", str(sid)))
+    url  = f"https://www.servercontrolpanel.de/scp-ui/servers/{sid}/screen"
 
-    sid   = resolve(server)
-    data  = api_get(f"/servers/{sid}")
-    host  = data.get("hostname", data.get("name", str(sid)))
-    token = get_access_token()
-
-    scp_host = "www.servercontrolpanel.de"
-    scp_path = f"/scp-core/api/v1/servers/{sid}/vnc"
-    token_enc = quote(token, safe="")
-
-    if ws_url or url_only:
-        console.print(f"wss://{scp_host}{scp_path}?token={token_enc}")
+    if url_only:
+        console.print(url)
         return
 
-    def _free_port() -> int:
-        with socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-            return s.getsockname()[1]
-
-    http_port  = _free_port()
-    proxy_port = _free_port()
-
-    # ── WebSocket proxy ────────────────────────────────────────────────────────
-    # Browser → ws://127.0.0.1:proxy_port  (no CORS issue, same host)
-    # Proxy   → wss://scp  with Origin: https://scp  (passes server check)
-
-    def _forward(src: socket.socket, dst: socket.socket) -> None:
-        try:
-            while chunk := src.recv(65536):
-                dst.sendall(chunk)
-        except Exception:
-            pass
-
-    def _handle_proxy(client: socket.socket) -> None:
-        try:
-            # Read browser's WebSocket upgrade
-            req = b""
-            while b"\r\n\r\n" not in req:
-                req += client.recv(4096)
-            client_key = ""
-            for line in req.decode(errors="replace").split("\r\n"):
-                if line.lower().startswith("sec-websocket-key:"):
-                    client_key = line.split(":", 1)[1].strip()
-
-            # Connect to SCP with correct Origin
-            ctx = ssl.create_default_context()
-            srv = ctx.wrap_socket(
-                socket.create_connection((scp_host, 443), timeout=10),
-                server_hostname=scp_host,
-            )
-            nonce = base64.b64encode(os.urandom(16)).decode()
-            srv.sendall((
-                f"GET {scp_path}?token={token_enc} HTTP/1.1\r\n"
-                f"Host: {scp_host}\r\n"
-                f"Upgrade: websocket\r\n"
-                f"Connection: Upgrade\r\n"
-                f"Sec-WebSocket-Key: {nonce}\r\n"
-                f"Sec-WebSocket-Version: 13\r\n"
-                f"Origin: https://{scp_host}\r\n"
-                f"\r\n"
-            ).encode())
-            resp = b""
-            while b"\r\n\r\n" not in resp:
-                resp += srv.recv(4096)
-            if b"101" not in resp[:20]:
-                client.close(); srv.close(); return
-
-            # Reply 101 to browser
-            accept = base64.b64encode(
-                hashlib.sha1(
-                    (client_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()
-                ).digest()
-            ).decode()
-            client.sendall((
-                "HTTP/1.1 101 Switching Protocols\r\n"
-                "Upgrade: websocket\r\n"
-                "Connection: Upgrade\r\n"
-                f"Sec-WebSocket-Accept: {accept}\r\n"
-                "\r\n"
-            ).encode())
-
-            # Bidirectional raw forward
-            threading.Thread(target=_forward, args=(srv, client), daemon=True).start()
-            _forward(client, srv)
-        except Exception:
-            pass
-        finally:
-            try: client.close()
-            except Exception: pass
-
-    def _run_proxy() -> None:
-        with socket.socket() as srv:
-            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            srv.bind(("127.0.0.1", proxy_port))
-            srv.listen(5)
-            while True:
-                try:
-                    conn, _ = srv.accept()
-                    threading.Thread(target=_handle_proxy, args=(conn,), daemon=True).start()
-                except Exception:
-                    break
-
-    threading.Thread(target=_run_proxy, daemon=True).start()
-
-    # ── HTTP server for the noVNC page ─────────────────────────────────────────
-    # noVNC connects to ws://127.0.0.1:proxy_port (no wss needed, all local)
-    html = VNC_HTML_TEMPLATE.format(hostname=host, ws_url=f"ws://127.0.0.1:{proxy_port}")
-
-    tmpdir = tempfile.mkdtemp(prefix="netcup-vnc-")
-    with open(os.path.join(tmpdir, "vnc.html"), "w") as f:
-        f.write(html)
-
-    class _Silent(http.server.SimpleHTTPRequestHandler):
-        def __init__(self, *a, **kw):
-            super().__init__(*a, directory=tmpdir, **kw)
-        def log_message(self, *_): pass
-
-    httpd = http.server.HTTPServer(("127.0.0.1", http_port), _Silent)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-
-    url = f"http://127.0.0.1:{http_port}/vnc.html"
-    console.print(f"VNC console for [bold]{host}[/bold]  — [dim]{url}[/dim]")
+    console.print(f"Opening VNC console for [bold]{host}[/bold]  — [dim]{url}[/dim]")
+    console.print("[dim]Log in to servercontrolpanel.de in the browser if prompted.[/dim]")
     _open_browser(url)
-
-    console.print("[dim]Press Ctrl+C to close.[/dim]")
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        httpd.shutdown()
-        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def _open_browser(url: str) -> None:
@@ -1428,7 +1304,7 @@ def update():
 
 # ── auto man pages ────────────────────────────────────────────────────────────
 
-VERSION = "1.9.0"
+VERSION = "1.9.1"
 _MAN_DIR     = Path.home() / ".local" / "share" / "man" / "man1"
 _MAN_STAMP   = CONFIG_DIR / ".manpage_version"
 
