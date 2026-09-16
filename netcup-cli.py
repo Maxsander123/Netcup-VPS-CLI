@@ -1128,7 +1128,7 @@ def vnc(server, url_only, ws_url):
         netcup-cli vnc head-server
         netcup-cli vnc 787734 --url-only
     """
-    import tempfile
+    import http.server, threading, socket, tempfile, shutil
 
     sid   = resolve(server)
     data  = api_get(f"/servers/{sid}")
@@ -1143,21 +1143,38 @@ def vnc(server, url_only, ws_url):
 
     html = VNC_HTML_TEMPLATE.format(hostname=host, ws_url=ws)
 
-    # Create temp file with 0o600 from the start — token is embedded in HTML
-    vnc_dir = Path.home() / ".config" / "netcup-cli"
-    vnc_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(suffix=".html", prefix="netcup-vnc-", dir=str(vnc_dir))
-    try:
-        os.write(fd, html.encode())
-    finally:
-        os.close(fd)
-    os.chmod(tmp_path, 0o600)
+    # Serve via local HTTP so browser allows wss:// WebSocket (file:// blocks it)
+    tmpdir = tempfile.mkdtemp(prefix="netcup-vnc-")
+    html_file = os.path.join(tmpdir, "vnc.html")
+    with open(html_file, "w") as f:
+        f.write(html)
 
-    console.print(f"VNC console for [bold]{host}[/bold]")
-    console.print(f"[dim]Temp page: {tmp_path}[/dim]")
-    _open_browser(f"file://{tmp_path}")
-    # Clean up after browser has had time to load the page
-    atexit.register(lambda p=tmp_path: Path(p).unlink(missing_ok=True))
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    class _SilentHandler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, directory=tmpdir, **kw)
+        def log_message(self, *_):
+            pass
+
+    httpd = http.server.HTTPServer(("127.0.0.1", port), _SilentHandler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+    url = f"http://127.0.0.1:{port}/vnc.html"
+    console.print(f"VNC console for [bold]{host}[/bold]  — [dim]{url}[/dim]")
+    _open_browser(url)
+
+    console.print("[dim]Press Ctrl+C to close.[/dim]")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.shutdown()
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def _open_browser(url: str) -> None:
