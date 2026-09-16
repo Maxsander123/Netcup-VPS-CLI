@@ -183,7 +183,7 @@ def wait_task(task_uuid: str, label: str = "Task") -> dict:
 # ── CLI root ──────────────────────────────────────────────────────────────────
 
 @click.group()
-@click.version_option("1.7.0", prog_name="netcup-cli")
+@click.version_option("1.8.0", prog_name="netcup-cli")
 def cli():
     """Netcup VPS CLI — control your Netcup VPS from the terminal."""
 
@@ -318,6 +318,39 @@ def info(server, as_json):
         row(f"Disk {i} ({d.get('dev','?')})",
             f"{d.get('allocationInMiB','?')} / {d.get('capacityInMiB','?')} MiB used")
     console.print(table)
+
+# ── status ────────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.argument("server")
+def status(server):
+    """Show compact live status for SERVER.
+
+    Example:
+
+        netcup-cli status head-server
+    """
+    sid  = resolve(server)
+    data = api_get(f"/servers/{sid}")
+    live  = data.get("serverLiveInfo", {})
+    state = live.get("state", "?").upper()
+    color = "green" if state == "RUNNING" else ("yellow" if state in ("PAUSED","SUSPENDED") else "red")
+    uptime = live.get("uptimeInSeconds", 0)
+    uptime_str = f"{uptime // 3600}h {(uptime % 3600) // 60}m" if uptime else "—"
+    ipv4   = _ipv4(data) or "—"
+    ipv6   = _ipv6(data) or "—"
+    cpu    = live.get("cpuCount", "?")
+    ram    = live.get("currentServerMemoryInMiB", "?")
+    disks  = live.get("disks", [])
+    disk_str = "  ".join(
+        f"{d.get('dev','?')}: {d.get('allocationInMiB','?')}/{d.get('capacityInMiB','?')} MiB"
+        for d in disks
+    ) or "—"
+
+    console.print(f"\n[bold]{data.get('hostname', server)}[/bold]  [{color}]● {state}[/{color}]  ↑ {uptime_str}")
+    console.print(f"  vCPU [bold]{cpu}[/bold]   RAM [bold]{ram}[/bold] MiB   IPv4 [bold]{ipv4}[/bold]   IPv6 [bold]{ipv6}[/bold]")
+    console.print(f"  Disk {disk_str}\n")
+
 
 # ── ips ───────────────────────────────────────────────────────────────────────
 
@@ -589,6 +622,23 @@ def logs(server, lines, as_json):
             str(e.get("message", "")),
         )
     console.print(table)
+
+
+@cli.command()
+@click.argument("server")
+@click.option("-n", "--lines", default=20, show_default=True, help="Number of entries.")
+@click.option("--json", "as_json", is_flag=True)
+def history(server, lines, as_json):
+    """Show activity history for SERVER (alias for logs).
+
+    Example:
+
+        netcup-cli history head-server
+        netcup-cli history head-server -n 50
+    """
+    ctx = click.get_current_context()
+    ctx.invoke(logs, server=server, lines=lines, as_json=as_json)
+
 
 # ── iso ───────────────────────────────────────────────────────────────────────
 
@@ -1150,7 +1200,7 @@ def list_commands(ctx):
     root = ctx.find_root()
     cli_cmd = root.command
 
-    console.print(f"\n[bold]netcup-cli[/bold] — Netcup VPS CLI v1.7.0\n")
+    console.print(f"\n[bold]netcup-cli[/bold] — Netcup VPS CLI v1.8.0\n")
 
     def print_group(cmd, prefix=""):
         if hasattr(cmd, 'commands'):
@@ -1184,7 +1234,7 @@ def gen_manpages(outdir):
     def gen(cmd, file_prefix, info_name, parent_ctx=None):
         ctx = _click.Context(cmd, info_name=info_name, parent=parent_ctx)
         fname = f"{file_prefix}.1"
-        (out / fname).write_text(generate_man_page(ctx, version="1.7.0"))
+        (out / fname).write_text(generate_man_page(ctx, version="1.8.0"))
         console.print(f"  [green]✓[/green] {fname}")
         if hasattr(cmd, 'commands'):
             for sub_name, sub_cmd in cmd.commands.items():
@@ -1288,7 +1338,7 @@ def update():
 
 # ── auto man pages ────────────────────────────────────────────────────────────
 
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 _MAN_DIR     = Path.home() / ".local" / "share" / "man" / "man1"
 _MAN_STAMP   = CONFIG_DIR / ".manpage_version"
 
