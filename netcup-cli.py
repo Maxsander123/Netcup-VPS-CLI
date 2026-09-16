@@ -183,7 +183,7 @@ def wait_task(task_uuid: str, label: str = "Task") -> dict:
 # ── CLI root ──────────────────────────────────────────────────────────────────
 
 @click.group()
-@click.version_option("1.5.0", prog_name="netcup-cli")
+@click.version_option("1.6.0", prog_name="netcup-cli")
 def cli():
     """Netcup VPS CLI — control your Netcup VPS from the terminal."""
 
@@ -1144,7 +1144,7 @@ def list_commands(ctx):
     root = ctx.find_root()
     cli_cmd = root.command
 
-    console.print(f"\n[bold]netcup-cli[/bold] — Netcup VPS CLI v1.5.0\n")
+    console.print(f"\n[bold]netcup-cli[/bold] — Netcup VPS CLI v1.6.0\n")
 
     def print_group(cmd, prefix=""):
         if hasattr(cmd, 'commands'):
@@ -1178,7 +1178,7 @@ def gen_manpages(outdir):
     def gen(cmd, file_prefix, info_name, parent_ctx=None):
         ctx = _click.Context(cmd, info_name=info_name, parent=parent_ctx)
         fname = f"{file_prefix}.1"
-        (out / fname).write_text(generate_man_page(ctx, version="1.5.0"))
+        (out / fname).write_text(generate_man_page(ctx, version="1.6.0"))
         console.print(f"  [green]✓[/green] {fname}")
         if hasattr(cmd, 'commands'):
             for sub_name, sub_cmd in cmd.commands.items():
@@ -1191,25 +1191,26 @@ def gen_manpages(outdir):
 # ── self-update ───────────────────────────────────────────────────────────────
 
 GITHUB_REPO = "Maxsander123/Netcup-VPS-CLI"
+_APT_SCRIPT  = Path("/usr/share/netcup-cli/netcup-cli.py")
 
 @cli.command()
 def update():
     """Update netcup-cli to the latest release from GitHub.
 
-    Downloads the latest netcup-cli.py from the GitHub release and replaces
-    the currently running script in-place. Works for both apt and install.sh
-    installations.
+    Automatically detects the install method:
+      - apt (Debian/Ubuntu): downloads the .deb and runs sudo apt install
+      - venv / macOS:        replaces netcup-cli.py in-place (no sudo needed)
 
     Example:
 
         netcup-cli update
     """
-    import urllib.request
+    import urllib.request, tempfile, subprocess
 
     api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     req = urllib.request.Request(
         api_url,
-        headers={"Accept": "application/vnd.github+json", "User-Agent": "netcup-cli"},
+        headers={"Accept": "application/vnd.github+json", "User-Agent": f"netcup-cli/{VERSION}"},
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -1229,43 +1230,59 @@ def update():
 
     console.print(f"Update available: v{VERSION} → [bold]v{latest}[/bold]")
 
-    asset_url = None
-    for asset in release.get("assets", []):
-        if asset["name"].endswith(".deb"):
-            asset_url = asset["browser_download_url"]
-            break
+    assets = {a["name"]: a["browser_download_url"] for a in release.get("assets", [])}
 
-    if not asset_url:
-        console.print("[red]No .deb found in latest release.[/red]")
-        sys.exit(1)
+    # Detect install method
+    apt_install = Path(__file__).resolve() == _APT_SCRIPT
 
-    console.print(f"Downloading v{latest} ...")
+    def _download(url: str, suffix: str) -> str:
+        try:
+            dl_req = urllib.request.Request(url, headers={"User-Agent": f"netcup-cli/{VERSION}"})
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+                with urllib.request.urlopen(dl_req, timeout=60) as r:
+                    f.write(r.read())
+                return f.name
+        except Exception as e:
+            console.print(f"[red]Download failed:[/red] {e}")
+            sys.exit(1)
 
-    import tempfile, subprocess
-    try:
-        dl_req = urllib.request.Request(asset_url, headers={"User-Agent": "netcup-cli"})
-        with tempfile.NamedTemporaryFile(suffix=".deb", delete=False) as f:
-            with urllib.request.urlopen(dl_req, timeout=60) as r:
-                f.write(r.read())
-            deb_path = f.name
-    except Exception as e:
-        console.print(f"[red]Download failed:[/red] {e}")
-        sys.exit(1)
-
-    console.print(f"Installing v{latest} (requires sudo) ...")
-    result = subprocess.run(["sudo", "apt", "install", "-y", deb_path])
-    Path(deb_path).unlink(missing_ok=True)
-
-    if result.returncode == 0:
-        console.print(f"[green]✓[/green] Updated to v{latest}.")
+    if apt_install:
+        # Debian/Ubuntu: use .deb + sudo apt
+        deb_name = next((n for n in assets if n.endswith(".deb")), None)
+        if not deb_name:
+            console.print("[red]No .deb found in latest release.[/red]")
+            sys.exit(1)
+        console.print(f"Downloading {deb_name} ...")
+        deb_path = _download(assets[deb_name], ".deb")
+        console.print("Installing (requires sudo) ...")
+        result = subprocess.run(["sudo", "apt", "install", "-y", deb_path])
+        Path(deb_path).unlink(missing_ok=True)
+        if result.returncode != 0:
+            console.print("[red]Installation failed.[/red]")
+            sys.exit(1)
     else:
-        console.print("[red]Installation failed.[/red]")
-        sys.exit(1)
+        # macOS / install.sh venv: replace script in-place
+        if "netcup-cli.py" not in assets:
+            console.print("[red]netcup-cli.py not found in latest release.[/red]")
+            sys.exit(1)
+        console.print("Downloading netcup-cli.py ...")
+        tmp_path = _download(assets["netcup-cli.py"], ".py")
+        script = Path(__file__).resolve()
+        fd = os.open(str(script.with_suffix(".tmp")), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o755)
+        try:
+            with open(tmp_path, "rb") as src:
+                os.write(fd, src.read())
+        finally:
+            os.close(fd)
+        Path(tmp_path).unlink(missing_ok=True)
+        script.with_suffix(".tmp").replace(script)
+
+    console.print(f"[green]✓[/green] Updated to v{latest}. Restart netcup-cli to apply.")
 
 
 # ── auto man pages ────────────────────────────────────────────────────────────
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 _MAN_DIR     = Path.home() / ".local" / "share" / "man" / "man1"
 _MAN_STAMP   = CONFIG_DIR / ".manpage_version"
 

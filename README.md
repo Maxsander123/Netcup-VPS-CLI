@@ -38,7 +38,15 @@ sudo apt update
 sudo apt install netcup-cli
 ```
 
-### Option B — install.sh (no root required)
+### Option B — macOS
+
+```bash
+bash <(curl -fsSL https://github.com/Maxsander123/Netcup-VPS-CLI/releases/latest/download/install-macos.sh)
+```
+
+Requires Python 3.8+ (`brew install python3` if needed).
+
+### Option C — install.sh (Debian/Ubuntu, no root required)
 
 ```bash
 git clone https://github.com/Maxsander123/Netcup-VPS-CLI.git
@@ -50,7 +58,7 @@ source ~/.bashrc
 ### Requirements
 
 - Python 3.8+
-- `python3-venv` (for install.sh) or installed automatically via apt
+- `python3-venv` + `python3-pip` (Debian/Ubuntu) or Homebrew Python (macOS)
 
 ## Usage
 

@@ -40,6 +40,8 @@ jobs:
           VERSION=${{ steps.ver.outputs.version }}
           gh release create latest \
             --title "netcup-cli v${VERSION} (latest)" \
-            --notes "Automatically built from the latest commit on main." \
+            --notes "$(printf '## Debian/Ubuntu\n```\nsudo apt install ./netcup-cli_%s_all.deb\n```\n\n## macOS\n```\nbash <(curl -fsSL https://github.com/Maxsander123/Netcup-VPS-CLI/releases/latest/download/install-macos.sh)\n```\n\n## Update\n```\nnetcup-cli update\n```' "$VERSION")" \
             --latest \
-            deb-build/netcup-cli_${VERSION}_all.deb
+            "deb-build/netcup-cli_${VERSION}_all.deb" \
+            netcup-cli.py \
+            install-macos.sh
