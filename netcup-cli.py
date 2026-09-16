@@ -1135,7 +1135,8 @@ def vnc(server, url_only, ws_url):
     host  = data.get("hostname", data.get("name", str(sid)))
     token = get_access_token()
 
-    ws = f"wss://www.servercontrolpanel.de/scp-core/api/v1/servers/{sid}/vnc?token={token}"
+    from urllib.parse import quote
+    ws = f"wss://www.servercontrolpanel.de/scp-core/api/v1/servers/{sid}/vnc?token={quote(token, safe='')}"
 
     if ws_url or url_only:
         console.print(ws)
