@@ -1122,7 +1122,44 @@ def gen_manpages(outdir):
     console.print(f"\n[green]Man pages written to {out}[/green]")
     console.print(f"Use: [bold]MANPATH={out.parent} man netcup-cli[/bold]")
 
+# ── auto man pages ────────────────────────────────────────────────────────────
+
+VERSION = "1.3.0"
+_MAN_DIR     = Path.home() / ".local" / "share" / "man" / "man1"
+_MAN_STAMP   = CONFIG_DIR / ".manpage_version"
+
+
+def _auto_gen_manpages() -> None:
+    """Silently regenerate man pages when version changed or pages are missing."""
+    try:
+        current = _MAN_STAMP.read_text().strip() if _MAN_STAMP.exists() else ""
+        main_page = _MAN_DIR / "netcup-cli.1"
+        if current == VERSION and main_page.exists():
+            return  # already up to date
+
+        from click_man.core import generate_man_page
+        import click as _click
+
+        _MAN_DIR.mkdir(parents=True, exist_ok=True)
+
+        def gen(cmd, file_prefix, info_name, parent_ctx=None):
+            ctx = _click.Context(cmd, info_name=info_name, parent=parent_ctx)
+            (_MAN_DIR / f"{file_prefix}.1").write_text(
+                generate_man_page(ctx, version=VERSION)
+            )
+            if hasattr(cmd, 'commands'):
+                for sub_name, sub_cmd in cmd.commands.items():
+                    gen(sub_cmd, f"{file_prefix}-{sub_name}", sub_name, ctx)
+
+        gen(cli, "netcup-cli", "netcup-cli")
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        _MAN_STAMP.write_text(VERSION)
+    except Exception:
+        pass  # never break the CLI over man page generation
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    _auto_gen_manpages()
     cli()
