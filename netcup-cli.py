@@ -330,26 +330,11 @@ def status(server):
 
         netcup-cli status head-server
     """
-    sid  = resolve(server)
-    data = api_get(f"/servers/{sid}")
-    live  = data.get("serverLiveInfo", {})
-    state = live.get("state", "?").upper()
-    color = "green" if state == "RUNNING" else ("yellow" if state in ("PAUSED","SUSPENDED") else "red")
-    uptime = live.get("uptimeInSeconds", 0)
-    uptime_str = f"{uptime // 3600}h {(uptime % 3600) // 60}m" if uptime else "—"
-    ipv4   = _ipv4(data) or "—"
-    ipv6   = _ipv6(data) or "—"
-    cpu    = live.get("cpuCount", "?")
-    ram    = live.get("currentServerMemoryInMiB", "?")
-    disks  = live.get("disks", [])
-    disk_str = "  ".join(
-        f"{d.get('dev','?')}: {d.get('allocationInMiB','?')}/{d.get('capacityInMiB','?')} MiB"
-        for d in disks
-    ) or "—"
-
-    console.print(f"\n[bold]{data.get('hostname', server)}[/bold]  [{color}]● {state}[/{color}]  ↑ {uptime_str}")
-    console.print(f"  vCPU [bold]{cpu}[/bold]   RAM [bold]{ram}[/bold] MiB   IPv4 [bold]{ipv4}[/bold]   IPv6 [bold]{ipv6}[/bold]")
-    console.print(f"  Disk {disk_str}\n")
+    sid   = resolve(server)
+    data  = api_get(f"/servers/{sid}")
+    state = data.get("serverLiveInfo", {}).get("state", "?").upper()
+    color = "green" if state == "RUNNING" else ("yellow" if state in ("PAUSED", "SUSPENDED", "INSTALLING") else "red")
+    console.print(f"[bold]{data.get('hostname', server)}[/bold]  [{color}]● {state}[/{color}]")
 
 
 # ── ips ───────────────────────────────────────────────────────────────────────
