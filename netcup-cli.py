@@ -87,8 +87,8 @@ def api_post(path: str, body: dict):
     r = requests.post(f"{API_BASE}{path}", headers=_headers(), json=body)
     _check(r); return r.json() if r.content else {}
 
-def api_patch(path: str, body: dict):
-    r = requests.patch(f"{API_BASE}{path}", headers=_headers(patch=True), json=body)
+def api_patch(path: str, body: dict, params: dict | None = None):
+    r = requests.patch(f"{API_BASE}{path}", headers=_headers(patch=True), json=body, params=params)
     _check(r); return r.json() if r.content else {}
 
 def api_put(path: str, body: dict):
@@ -183,7 +183,7 @@ def wait_task(task_uuid: str, label: str = "Task") -> dict:
 # ── CLI root ──────────────────────────────────────────────────────────────────
 
 @click.group()
-@click.version_option("1.6.0", prog_name="netcup-cli")
+@click.version_option("1.7.0", prog_name="netcup-cli")
 def cli():
     """Netcup VPS CLI — control your Netcup VPS from the terminal."""
 
@@ -361,12 +361,18 @@ def ips(server):
 
 # ── power controls ────────────────────────────────────────────────────────────
 
+def _power(sid: int, state: str, option: str | None = None) -> None:
+    """PATCH /servers/{id}?stateOption=... with {"state": ...}"""
+    params = {"stateOption": option} if option else None
+    api_patch(f"/servers/{sid}", {"state": state}, params=params)
+
+
 @cli.command()
 @click.argument("server")
 def start(server):
     """Power on SERVER."""
     sid = resolve(server)
-    api_post(f"/servers/{sid}/power", {"state": "ON"})
+    _power(sid, "ON")
     console.print("[green]✓[/green] Start command sent.")
 
 
@@ -377,7 +383,7 @@ def stop(server, force):
     """Graceful ACPI shutdown of SERVER."""
     if not force and not Confirm.ask(f"Shutdown [bold]{server}[/bold]?"): return
     sid = resolve(server)
-    api_post(f"/servers/{sid}/power", {"state": "OFF", "option": "POWEROFF"})
+    _power(sid, "OFF")
     console.print("[green]✓[/green] Shutdown command sent.")
 
 
@@ -388,7 +394,7 @@ def reset(server, force):
     """Hard reset SERVER."""
     if not force and not Confirm.ask(f"[red]Hard reset[/red] [bold]{server}[/bold]?"): return
     sid = resolve(server)
-    api_post(f"/servers/{sid}/power", {"state": "ON", "option": "RESET"})
+    _power(sid, "ON", "RESET")
     console.print("[green]✓[/green] Reset command sent.")
 
 
@@ -396,10 +402,10 @@ def reset(server, force):
 @click.argument("server")
 @click.option("-f", "--force", is_flag=True)
 def poweroff(server, force):
-    """Cut power to SERVER immediately."""
+    """Cut power to SERVER immediately (hard off)."""
     if not force and not Confirm.ask(f"[red]Hard power-off[/red] [bold]{server}[/bold]?"): return
     sid = resolve(server)
-    api_post(f"/servers/{sid}/power", {"state": "OFF", "option": "POWEROFF"})
+    _power(sid, "OFF", "POWEROFF")
     console.print("[green]✓[/green] Power-off command sent.")
 
 
@@ -410,7 +416,7 @@ def powercycle(server, force):
     """Power cycle SERVER (hard off then on)."""
     if not force and not Confirm.ask(f"Power cycle [bold]{server}[/bold]?"): return
     sid = resolve(server)
-    api_post(f"/servers/{sid}/power", {"state": "ON", "option": "POWERCYCLE"})
+    _power(sid, "ON", "POWERCYCLE")
     console.print("[green]✓[/green] Power cycle command sent.")
 
 # ── disks ─────────────────────────────────────────────────────────────────────
@@ -1144,7 +1150,7 @@ def list_commands(ctx):
     root = ctx.find_root()
     cli_cmd = root.command
 
-    console.print(f"\n[bold]netcup-cli[/bold] — Netcup VPS CLI v1.6.0\n")
+    console.print(f"\n[bold]netcup-cli[/bold] — Netcup VPS CLI v1.7.0\n")
 
     def print_group(cmd, prefix=""):
         if hasattr(cmd, 'commands'):
@@ -1178,7 +1184,7 @@ def gen_manpages(outdir):
     def gen(cmd, file_prefix, info_name, parent_ctx=None):
         ctx = _click.Context(cmd, info_name=info_name, parent=parent_ctx)
         fname = f"{file_prefix}.1"
-        (out / fname).write_text(generate_man_page(ctx, version="1.6.0"))
+        (out / fname).write_text(generate_man_page(ctx, version="1.7.0"))
         console.print(f"  [green]✓[/green] {fname}")
         if hasattr(cmd, 'commands'):
             for sub_name, sub_cmd in cmd.commands.items():
@@ -1282,7 +1288,7 @@ def update():
 
 # ── auto man pages ────────────────────────────────────────────────────────────
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 _MAN_DIR     = Path.home() / ".local" / "share" / "man" / "man1"
 _MAN_STAMP   = CONFIG_DIR / ".manpage_version"
 
