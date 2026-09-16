@@ -957,78 +957,117 @@ def sshkeys_list(as_json):
 
 # ── VNC console ───────────────────────────────────────────────────────────────
 
+VNC_HTML_TEMPLATE = """\
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>VNC — {hostname}</title>
+  <style>
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{ background: #1a1a1a; display: flex; flex-direction: column;
+           height: 100vh; font-family: monospace; color: #ccc; }}
+    #toolbar {{ background: #111; padding: 6px 12px; display: flex;
+                align-items: center; gap: 12px; font-size: 13px; flex-shrink: 0; }}
+    #toolbar span {{ color: #888; }}
+    #toolbar strong {{ color: #fff; }}
+    #status {{ margin-left: auto; color: #f90; }}
+    #screen {{ flex: 1; overflow: hidden; }}
+    #screen canvas {{ width: 100% !important; height: 100% !important; }}
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <span>netcup-cli VNC</span>
+    <strong>{hostname}</strong>
+    <span id="status">Connecting…</span>
+  </div>
+  <div id="screen"></div>
+  <script type="module">
+    import RFB from 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.5.0/core/rfb.js';
+
+    const wsUrl = '{ws_url}';
+    const status = document.getElementById('status');
+
+    let rfb;
+    try {{
+      rfb = new RFB(document.getElementById('screen'), wsUrl);
+      rfb.scaleViewport = true;
+      rfb.resizeSession = true;
+      rfb.addEventListener('connect',    () => status.textContent = '● Connected');
+      rfb.addEventListener('disconnect', (e) => {{
+        status.style.color = '#f44';
+        status.textContent = '✗ Disconnected' + (e.detail.clean ? '' : ' (error)');
+      }});
+    }} catch (e) {{
+      status.style.color = '#f44';
+      status.textContent = '✗ ' + e.message;
+    }}
+  </script>
+</body>
+</html>
+"""
+
+
 @cli.command()
 @click.argument("server")
-@click.option("--browser", is_flag=True, default=True, show_default=True,
-              help="Open VNC in default browser (default).")
-@click.option("--url-only", is_flag=True, help="Just print the VNC URL, don't open it.")
-def vnc(server, browser, url_only):
-    """Open the VNC console for SERVER in the browser.
+@click.option("--url-only", is_flag=True, help="Print WebSocket URL instead of opening browser.")
+@click.option("--ws-url", is_flag=True, help="Print raw WebSocket URL.")
+def vnc(server, url_only, ws_url):
+    """Open the VNC console for SERVER in the browser via noVNC.
+
+    Generates a local HTML page with noVNC embedded and opens it.
+    The access token is embedded so no SCP login is needed.
 
     Example:
 
         netcup-cli vnc head-server
-        netcup-cli vnc head-server --url-only
+        netcup-cli vnc 787734 --url-only
     """
-    import subprocess, shutil
+    import tempfile, os
 
-    sid  = resolve(server)
-    data = api_get(f"/servers/{sid}")
-    name = data.get("name", str(sid))
+    sid   = resolve(server)
+    data  = api_get(f"/servers/{sid}")
+    host  = data.get("hostname", data.get("name", str(sid)))
+    token = get_access_token()
 
-    # Try REST API for a VNC token/URL first (silent — 404 is expected)
-    vnc_url = None
-    for path in (f"/servers/{sid}/vnc", f"/servers/{sid}/console"):
-        r = requests.get(f"{API_BASE}{path}", headers=_headers())
-        if r.ok:
-            resp    = r.json()
-            vnc_url = resp.get("url") or resp.get("websocketUrl") or resp.get("token")
-            if vnc_url:
-                break
+    ws = f"wss://www.servercontrolpanel.de/scp-core/api/v1/servers/{sid}/vnc?token={token}"
 
-    if not vnc_url:
-        # Fall back to SCP web UI VNC page
-        # The SCP passes the Bearer token via URL fragment so we embed it
-        token = get_access_token()
-        vnc_url = (
-            f"https://www.servercontrolpanel.de/"
-            f"?access_token={token}"
-            f"#/server/{name}/vnc"
-        )
-        # Simpler fallback without token (user must be logged in to SCP)
-        vnc_url_simple = f"https://www.servercontrolpanel.de/#/server/{name}/vnc"
-
-        if url_only:
-            console.print(vnc_url_simple)
-            return
-
-        console.print(f"[dim]No VNC API endpoint — opening SCP web console…[/dim]")
-        _open_browser(vnc_url_simple)
+    if ws_url or url_only:
+        console.print(ws)
         return
 
-    if url_only:
-        console.print(vnc_url)
-        return
+    html = VNC_HTML_TEMPLATE.format(hostname=host, ws_url=ws)
 
-    _open_browser(vnc_url)
+    # Write to a temp file that persists long enough for the browser to load it
+    tmp = tempfile.NamedTemporaryFile(
+        suffix=".html", prefix="netcup-vnc-", delete=False,
+        dir=str(Path.home() / ".config" / "netcup-cli"),
+        mode="w"
+    )
+    tmp.write(html)
+    tmp.close()
+
+    console.print(f"VNC console for [bold]{host}[/bold]")
+    console.print(f"[dim]Temp page: {tmp.name}[/dim]")
+    _open_browser(f"file://{tmp.name}")
 
 
 def _open_browser(url: str) -> None:
     """Open URL in the user's default browser."""
-    import subprocess, shutil, os
+    import subprocess, shutil
 
     console.print(f"Opening: [bold cyan]{url}[/bold cyan]")
 
-    # Try common openers in order
-    for opener in ("xdg-open", "sensible-browser", "x-www-browser", "firefox", "chromium-browser"):
+    for opener in ("xdg-open", "sensible-browser", "x-www-browser", "firefox", "chromium-browser", "google-chrome"):
         if shutil.which(opener):
             subprocess.Popen([opener, url],
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
             return
 
-    # No GUI browser found — just print
-    console.print("[yellow]No browser found. Copy the URL above into your browser.[/yellow]")
+    console.print("[yellow]No browser found. Open this URL manually:[/yellow]")
+    console.print(f"  {url}")
 
 # ── help / man pages ──────────────────────────────────────────────────────────
 
