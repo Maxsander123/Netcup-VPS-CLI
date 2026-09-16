@@ -19,6 +19,7 @@ from rich import box
 from rich.prompt import Confirm
 
 AUTH_BASE       = "https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect"
+VERSION         = "2.0.0"
 API_BASE        = "https://www.servercontrolpanel.de/scp-core/api/v1"
 DEVICE_ENDPOINT = f"{AUTH_BASE}/auth/device"
 TOKEN_ENDPOINT  = f"{AUTH_BASE}/token"
@@ -183,7 +184,7 @@ def wait_task(task_uuid: str, label: str = "Task") -> dict:
 # ── CLI root ──────────────────────────────────────────────────────────────────
 
 @click.group()
-@click.version_option("1.8.0", prog_name="netcup-cli")
+@click.version_option(VERSION, prog_name="netcup-cli")
 def cli():
     """Netcup VPS CLI — control your Netcup VPS from the terminal."""
 
@@ -648,6 +649,30 @@ def iso_status(server, as_json):
     if attached:
         console.print(f"ISO: [bold]{iso_name}[/bold]")
 
+
+@iso.command("attach")
+@click.argument("server")
+@click.argument("name")
+def iso_attach(server, name):
+    """Attach ISO image NAME to SERVER.
+
+    Example:
+
+        netcup-cli iso attach head-server ubuntu-24.04-live-server-amd64.iso
+    """
+    sid = resolve(server)
+    api_post(f"/servers/{sid}/iso", {"iso": name})
+    console.print(f"ISO [bold]{name}[/bold] attached to [bold]{server}[/bold].")
+
+
+@iso.command("detach")
+@click.argument("server")
+def iso_detach(server):
+    """Detach the currently attached ISO from SERVER."""
+    sid = resolve(server)
+    api_delete(f"/servers/{sid}/iso")
+    console.print(f"ISO detached from [bold]{server}[/bold].")
+
 # ── tasks ─────────────────────────────────────────────────────────────────────
 
 @cli.command()
@@ -915,27 +940,36 @@ def install_images(server, apps, as_json):
 @click.option("--ssh-key",    "ssh_keys", multiple=True, type=int, help="SSH key ID(s) to inject (repeatable).")
 @click.option("--ssh-password/--no-ssh-password", default=True, show_default=True,
               help="Allow SSH password authentication.")
-@click.option("--script",     default="", help="Custom cloud-init bash script.")
+@click.option("--script",           default="", help="Custom cloud-init bash script (inline string).")
+@click.option("--cloud-init-file",  default="", type=click.Path(exists=True),
+              help="Path to a cloud-init YAML or bash script file (alternative to --script).")
 @click.option("--full-disk/--no-full-disk", default=True, show_default=True,
               help="Use full disk for root partition.")
 @click.option("--email", is_flag=True, help="Send confirmation email after install.")
 @click.option("--wait", is_flag=True, help="Wait for install to complete.")
 @click.option("-f", "--force", is_flag=True, help="Skip confirmation.")
 def install_run(server, image_id, hostname, locale, timezone, user, user_pass,
-                ssh_keys, ssh_password, script, full_disk, email, wait, force):
+                ssh_keys, ssh_password, script, cloud_init_file, full_disk, email, wait, force):
     """Install/reinstall SERVER with an OS image.
 
     Example:
 
         netcup-cli install images head-server        # list images
         netcup-cli install run head-server --image-id 112 --hostname myserver
+        netcup-cli install run head-server --image-id 112 --cloud-init-file user-data.yaml
 
     WARNING: This will ERASE all data on the server!
     """
     sid = resolve(server)
 
+    if cloud_init_file and script:
+        raise click.UsageError("Use either --script or --cloud-init-file, not both.")
+    if cloud_init_file:
+        with open(cloud_init_file) as f:
+            script = f.read()
+
     if script:
-        console.print("[yellow bold]WARNING:[/yellow bold] --script runs arbitrary bash as root on the new system. Review its contents before proceeding.")
+        console.print("[yellow bold]WARNING:[/yellow bold] --script/--cloud-init-file runs arbitrary code as root on the new system. Review its contents before proceeding.")
 
     if not force:
         console.print(f"[red bold]WARNING:[/red bold] All data on [bold]{server}[/bold] will be erased!")
@@ -1060,59 +1094,6 @@ def sshkeys_list(as_json):
 
 # ── VNC console ───────────────────────────────────────────────────────────────
 
-VNC_HTML_TEMPLATE = """\
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>VNC — {hostname}</title>
-  <style>
-    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-    body {{ background: #1a1a1a; display: flex; flex-direction: column;
-           height: 100vh; font-family: monospace; color: #ccc; }}
-    #toolbar {{ background: #111; padding: 6px 12px; display: flex;
-                align-items: center; gap: 12px; font-size: 13px; flex-shrink: 0; }}
-    #toolbar span {{ color: #888; }}
-    #toolbar strong {{ color: #fff; }}
-    #status {{ margin-left: auto; color: #f90; }}
-    #screen {{ flex: 1; overflow: hidden; }}
-    #screen canvas {{ width: 100% !important; height: 100% !important; }}
-  </style>
-</head>
-<body>
-  <div id="toolbar">
-    <span>netcup-cli VNC</span>
-    <strong>{hostname}</strong>
-    <span id="status">Connecting…</span>
-  </div>
-  <div id="screen"></div>
-  <script type="module">
-    import RFB from 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.5.0/core/rfb.js'
-      // integrity="sha384-O+Gv1O92p9jznqgsBMGcJcBNwGeXVT9WFlO9lmqcqTM937WM9jCVpjbiD8MYWOex" crossorigin="anonymous"
-
-    const wsUrl = '{ws_url}';
-    const status = document.getElementById('status');
-
-    let rfb;
-    try {{
-      rfb = new RFB(document.getElementById('screen'), wsUrl);
-      rfb.scaleViewport = true;
-      rfb.resizeSession = true;
-      rfb.addEventListener('connect',    () => status.textContent = '● Connected');
-      rfb.addEventListener('disconnect', (e) => {{
-        status.style.color = '#f44';
-        status.textContent = '✗ Disconnected' + (e.detail.clean ? '' : ' (error)');
-      }});
-    }} catch (e) {{
-      status.style.color = '#f44';
-      status.textContent = '✗ ' + e.message;
-    }}
-  </script>
-</body>
-</html>
-"""
-
-
 @cli.command()
 @click.argument("server")
 @click.option("--url-only", is_flag=True, help="Print the console URL instead of opening browser.")
@@ -1156,6 +1137,43 @@ def _open_browser(url: str) -> None:
 
     console.print("[yellow]No browser found. Open this URL manually:[/yellow]")
     console.print(f"  {url}")
+
+# ── ssh ───────────────────────────────────────────────────────────────────────
+
+@cli.command("ssh")
+@click.argument("server")
+@click.option("-u", "--user", default="root", show_default=True, help="SSH username.")
+@click.option("-p", "--port", default=22, show_default=True, type=int, help="SSH port.")
+@click.option("--ip", default="", help="Use this IP instead of auto-detecting.")
+def ssh_cmd(server, user, port, ip):
+    """Open an SSH connection to SERVER.
+
+    The server's first public IPv4 is used automatically.
+
+    Example:
+
+        netcup-cli ssh head-server
+        netcup-cli ssh head-server --user mia --port 2222
+    """
+    sid = resolve(server)
+    if not ip:
+        ifaces = api_get(f"/servers/{sid}/interfaces")
+        for iface in ifaces:
+            for addr in iface.get("ipAddresses", []):
+                candidate = addr.get("ip", "")
+                if addr.get("version") == 4 and not candidate.startswith(
+                    ("10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.",
+                     "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
+                     "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.")
+                ):
+                    ip = candidate
+                    break
+            if ip:
+                break
+    if not ip:
+        raise click.ClickException("No public IPv4 found — use --ip to specify one manually.")
+    console.print(f"[dim]Connecting: ssh {user}@{ip} -p {port}[/dim]")
+    os.execvp("ssh", ["ssh", f"{user}@{ip}", "-p", str(port)])
 
 # ── help / man pages ──────────────────────────────────────────────────────────
 
@@ -1304,7 +1322,7 @@ def update():
 
 # ── auto man pages ────────────────────────────────────────────────────────────
 
-VERSION = "1.9.1"
+_VERSION_DEFINED_ABOVE = True
 _MAN_DIR     = Path.home() / ".local" / "share" / "man" / "man1"
 _MAN_STAMP   = CONFIG_DIR / ".manpage_version"
 
