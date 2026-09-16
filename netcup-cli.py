@@ -143,7 +143,7 @@ def wait_task(task_uuid: str, label: str = "Task") -> dict:
 # ── CLI root ──────────────────────────────────────────────────────────────────
 
 @click.group()
-@click.version_option("1.2.0", prog_name="netcup-cli")
+@click.version_option("1.3.0", prog_name="netcup-cli")
 def cli():
     """Netcup VPS CLI — control your Netcup VPS from the terminal."""
 
@@ -745,23 +745,268 @@ def set_hostname(server, hostname):
     api_patch(f"/servers/{sid}", {"hostname": hostname})
     console.print(f"[green]✓[/green] Hostname → [bold]{hostname}[/bold]")
 
-# ── reinstall ─────────────────────────────────────────────────────────────────
+# ── reinstall / OS install ────────────────────────────────────────────────────
 
-@cli.command()
+def _get_user_id() -> int:
+    """Decode user ID from JWT access token payload."""
+    import base64 as _b64
+    token = get_access_token()
+    payload_b64 = token.split('.')[1]
+    payload_b64 += '=' * (4 - len(payload_b64) % 4)
+    payload = json.loads(_b64.urlsafe_b64decode(payload_b64))
+    uid = payload.get("userId") or payload.get("user_id")
+    if uid:
+        return int(uid)
+    # fallback: iterate known claim names
+    for key in ("sub", "id", "userId", "user_id"):
+        val = payload.get(key)
+        if val and str(val).isdigit():
+            return int(val)
+    console.print(f"[red]Could not determine user ID from JWT.[/red] Claims: {list(payload.keys())}")
+    sys.exit(1)
+
+
+@cli.group()
+def install():
+    """OS installation and reinstallation."""
+
+
+@install.command("images")
 @click.argument("server")
-def reinstall(server):
-    """Open SCP web UI for OS reinstall.
+@click.option("--apps", is_flag=True, help="Show app images instead of OS images.")
+@click.option("--json", "as_json", is_flag=True)
+def install_images(server, apps, as_json):
+    """List available OS images for SERVER."""
+    sid    = resolve(server)
+    params = {"app": "true"} if apps else {}
+    data   = api_get(f"/servers/{sid}/imageflavours", params=params)
+    data   = data if isinstance(data, list) else []
 
-    The reinstall endpoint is not in the public REST API.
+    if as_json:
+        click.echo(json.dumps(data, indent=2)); return
+    if not data:
+        console.print("[dim]No images available.[/dim]"); return
+
+    table = Table(title=f"{'App ' if apps else 'OS '}Images — {server}", box=box.ROUNDED)
+    table.add_column("ID",     style="dim",  justify="right")
+    table.add_column("OS / Image",  style="bold")
+    table.add_column("Flavour", style="cyan")
+    table.add_column("Description", style="dim")
+
+    for img in data:
+        table.add_row(
+            str(img.get("id", "")),
+            img.get("image", {}).get("name", ""),
+            img.get("alias", img.get("name", "")),
+            img.get("text", ""),
+        )
+    console.print(table)
+    console.print("\nInstall with: [bold]netcup-cli install run SERVER --image-id ID[/bold]")
+
+
+@install.command("run")
+@click.argument("server")
+@click.option("--image-id",   required=True, type=int, help="Image flavour ID (from 'install images').")
+@click.option("--hostname",   default="", help="Set hostname after install.")
+@click.option("--locale",     default="", help="e.g. en_US.UTF-8")
+@click.option("--timezone",   default="", help="e.g. Europe/Berlin")
+@click.option("--user",       default="", help="Additional non-root user to create.")
+@click.option("--user-pass",  default="", help="Password for the additional user.")
+@click.option("--ssh-key",    "ssh_keys", multiple=True, type=int, help="SSH key ID(s) to inject (repeatable).")
+@click.option("--ssh-password/--no-ssh-password", default=True, show_default=True,
+              help="Allow SSH password authentication.")
+@click.option("--script",     default="", help="Custom cloud-init bash script.")
+@click.option("--full-disk/--no-full-disk", default=True, show_default=True,
+              help="Use full disk for root partition.")
+@click.option("--email", is_flag=True, help="Send confirmation email after install.")
+@click.option("--wait", is_flag=True, help="Wait for install to complete.")
+@click.option("-f", "--force", is_flag=True, help="Skip confirmation.")
+def install_run(server, image_id, hostname, locale, timezone, user, user_pass,
+                ssh_keys, ssh_password, script, full_disk, email, wait, force):
+    """Install/reinstall SERVER with an OS image.
+
+    Example:
+
+        netcup-cli install images head-server        # list images
+        netcup-cli install run head-server --image-id 112 --hostname myserver
+
+    WARNING: This will ERASE all data on the server!
     """
+    sid = resolve(server)
+
+    if not force:
+        console.print(f"[red bold]WARNING:[/red bold] All data on [bold]{server}[/bold] will be erased!")
+        if not Confirm.ask(f"Install image [bold]{image_id}[/bold] on [bold]{server}[/bold]?"):
+            return
+
+    body: dict = {
+        "imageFlavourId":          image_id,
+        "rootPartitionFullDiskSize": full_disk,
+        "sshPasswordAuthentication": ssh_password,
+        "emailToExecutingUser":     email,
+    }
+    if hostname:  body["hostname"]                = hostname
+    if locale:    body["locale"]                  = locale
+    if timezone:  body["timezone"]                = timezone
+    if user:      body["additionalUserUsername"]  = user
+    if user_pass: body["additionalUserPassword"]  = user_pass
+    if ssh_keys:  body["sshKeyIds"]               = list(ssh_keys)
+    if script:    body["customScript"]            = script
+
+    result  = api_post(f"/servers/{sid}/image", body)
+    task_id = result.get("uuid", result.get("id", ""))
+    console.print(f"[green]✓[/green] Installation started. Task: [bold]{task_id}[/bold]")
+    if wait and task_id:
+        wait_task(task_id, "Install")
+
+# ── rescue system ─────────────────────────────────────────────────────────────
+
+@cli.group()
+def rescue():
+    """Rescue system management."""
+
+
+@rescue.command("status")
+@click.argument("server")
+@click.option("--json", "as_json", is_flag=True)
+def rescue_status(server, as_json):
+    """Show rescue system status for SERVER."""
     sid  = resolve(server)
-    data = api_get(f"/servers/{sid}")
-    name = data.get("name", str(sid))
-    url  = f"https://www.servercontrolpanel.de/SCP/VServer#server={name}&action=reinstall"
-    console.print(
-        f"[yellow]Reinstall is not available via the public REST API.[/yellow]\n"
-        f"Open the SCP web UI:\n\n  [bold cyan]{url}[/bold cyan]\n"
-    )
+    data = api_get(f"/servers/{sid}/rescuesystem")
+    if as_json:
+        click.echo(json.dumps(data, indent=2)); return
+    active = data.get("active", False)
+    pw     = data.get("password")
+    status = "[green]ACTIVE[/green]" if active else "[dim]inactive[/dim]"
+    console.print(f"Rescue system: {status}")
+    if active and pw:
+        console.print(f"SSH password:  [bold yellow]{pw}[/bold yellow]")
+
+
+@rescue.command("activate")
+@click.argument("server")
+@click.option("--wait", is_flag=True)
+@click.option("-f", "--force", is_flag=True)
+def rescue_activate(server, wait, force):
+    """Activate rescue system for SERVER.
+
+    The server will reboot into the rescue system.
+    SSH login with the password shown in 'rescue status'.
+    """
+    if not force and not Confirm.ask(f"Activate rescue system on [bold]{server}[/bold]?\n"
+                                      "  (server will reboot)"):
+        return
+    sid    = resolve(server)
+    result = api_post(f"/servers/{sid}/rescuesystem", {})
+    task_id = result.get("uuid", "")
+    console.print(f"[green]✓[/green] Rescue activation started.")
+    if wait and task_id:
+        wait_task(task_id, "Rescue activate")
+    console.print("Run [bold]netcup-cli rescue status {server}[/bold] to get the SSH password.")
+
+
+@rescue.command("deactivate")
+@click.argument("server")
+@click.option("--wait", is_flag=True)
+@click.option("-f", "--force", is_flag=True)
+def rescue_deactivate(server, wait, force):
+    """Deactivate rescue system and reboot SERVER normally."""
+    if not force and not Confirm.ask(f"Deactivate rescue and reboot [bold]{server}[/bold]?"):
+        return
+    sid    = resolve(server)
+    result = api_delete(f"/servers/{sid}/rescuesystem")
+    task_id = (result or {}).get("uuid", "")
+    console.print(f"[green]✓[/green] Rescue deactivation started.")
+    if wait and task_id:
+        wait_task(task_id, "Rescue deactivate")
+
+# ── SSH keys ──────────────────────────────────────────────────────────────────
+
+@cli.group()
+def sshkeys():
+    """SSH key management."""
+
+
+@sshkeys.command("list")
+@click.option("--json", "as_json", is_flag=True)
+def sshkeys_list(as_json):
+    """List SSH keys in your account."""
+    uid  = _get_user_id()
+    data = api_get(f"/users/{uid}/ssh-keys")
+    data = data if isinstance(data, list) else data.get("data", [])
+    if as_json:
+        click.echo(json.dumps(data, indent=2)); return
+    if not data:
+        console.print("[dim]No SSH keys found.[/dim]"); return
+
+    table = Table(title="SSH Keys", box=box.ROUNDED)
+    table.add_column("ID",          style="dim",  justify="right")
+    table.add_column("Name",        style="bold")
+    table.add_column("Fingerprint", style="cyan")
+    table.add_column("Type",        style="dim")
+
+    for k in data:
+        table.add_row(
+            str(k.get("id", "")),
+            k.get("name", k.get("label", "")),
+            k.get("fingerprint", ""),
+            k.get("type", k.get("algorithm", "")),
+        )
+    console.print(table)
+    console.print("\nUse [bold]--ssh-key ID[/bold] with [bold]netcup-cli install run[/bold] to inject keys.")
+
+# ── help / man pages ──────────────────────────────────────────────────────────
+
+@cli.command("commands")
+@click.pass_context
+def list_commands(ctx):
+    """Show all available commands with descriptions."""
+    root = ctx.find_root()
+    cli_cmd = root.command
+
+    console.print(f"\n[bold]netcup-cli[/bold] — Netcup VPS CLI v1.3.0\n")
+
+    def print_group(cmd, prefix=""):
+        if hasattr(cmd, 'commands'):
+            for name, sub in sorted(cmd.commands.items()):
+                full = f"{prefix}{name}" if not prefix else f"{prefix} {name}"
+                desc = (sub.help or "").split("\n")[0][:60]
+                console.print(f"  [cyan]{full:<30}[/cyan] [dim]{desc}[/dim]")
+                if hasattr(sub, 'commands') and sub.commands:
+                    print_group(sub, full)
+
+    print_group(cli_cmd)
+    console.print("\nRun [bold]netcup-cli COMMAND --help[/bold] for details.")
+    console.print("Run [bold]man netcup-cli-COMMAND[/bold] for the man page.\n")
+
+
+@cli.command("gen-manpages")
+@click.option("--dir", "outdir", default=str(Path.home() / ".local/share/man/man1"),
+              show_default=True, help="Output directory.")
+def gen_manpages(outdir):
+    """Generate man pages for all commands into OUTDIR."""
+    try:
+        from click_man.core import generate_man_page
+    except ImportError:
+        console.print("[red]click-man not installed.[/red] Run: pip install click-man")
+        sys.exit(1)
+
+    import click as _click
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    def gen(cmd, file_prefix, info_name, parent_ctx=None):
+        ctx = _click.Context(cmd, info_name=info_name, parent=parent_ctx)
+        fname = f"{file_prefix}.1"
+        (out / fname).write_text(generate_man_page(ctx, version="1.3.0"))
+        console.print(f"  [green]✓[/green] {fname}")
+        if hasattr(cmd, 'commands'):
+            for sub_name, sub_cmd in cmd.commands.items():
+                gen(sub_cmd, f"{file_prefix}-{sub_name}", sub_name, ctx)
+
+    gen(cli, "netcup-cli", "netcup-cli")
+    console.print(f"\n[green]Man pages written to {out}[/green]")
+    console.print(f"Use: [bold]MANPATH={out.parent} man netcup-cli[/bold]")
 
 # ── entry point ───────────────────────────────────────────────────────────────
 

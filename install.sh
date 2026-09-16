@@ -1,33 +1,44 @@
 #!/usr/bin/env bash
-# Install netcup-cli on Ubuntu/Debian
+# Install netcup-cli on Ubuntu/Debian (no root required)
 set -e
 
-INSTALL_DIR="/usr/local/lib/netcup-cli"
-BIN_LINK="/usr/local/bin/netcup-cli"
+INSTALL_DIR="$HOME/.local/lib/netcup-cli"
+BIN_LINK="$HOME/.local/bin/netcup-cli"
+MAN_DIR="$HOME/.local/share/man/man1"
 
-# Require root
-if [ "$(id -u)" -ne 0 ]; then
-    echo "Run as root: sudo bash install.sh"
+if ! command -v python3 &>/dev/null; then
+    echo "python3 not found. Install with: sudo apt-get install python3 python3-venv"
     exit 1
 fi
 
-# Dependencies
-apt-get update -qq
-apt-get install -y -qq python3 python3-pip python3-venv
+echo "Installing netcup-cli..."
 
-# Install into a dedicated venv
 python3 -m venv "$INSTALL_DIR"
-"$INSTALL_DIR/bin/pip" install --quiet -r requirements.txt
+"$INSTALL_DIR/bin/pip" install --quiet -r requirements.txt click-man
 
-# Copy script
 cp netcup-cli.py "$INSTALL_DIR/netcup-cli.py"
-chmod +x "$INSTALL_DIR/netcup-cli.py"
 
-# Create wrapper
-cat > "$BIN_LINK" <<'EOF'
+mkdir -p "$HOME/.local/bin"
+cat > "$BIN_LINK" <<EOF
 #!/usr/bin/env bash
-exec /usr/local/lib/netcup-cli/bin/python /usr/local/lib/netcup-cli/netcup-cli.py "$@"
+exec "$INSTALL_DIR/bin/python" "$INSTALL_DIR/netcup-cli.py" "\$@"
 EOF
 chmod +x "$BIN_LINK"
 
-echo "Installed. Run: netcup-cli --help"
+mkdir -p "$MAN_DIR"
+"$INSTALL_DIR/bin/python" "$INSTALL_DIR/netcup-cli.py" gen-manpages --dir "$MAN_DIR" 2>/dev/null || true
+
+for RC in ~/.bashrc ~/.zshrc; do
+    [ -f "$RC" ] || continue
+    grep -q 'HOME/.local/bin' "$RC" 2>/dev/null || \
+        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$RC"
+    grep -q 'HOME/.local/share/man' "$RC" 2>/dev/null || \
+        echo 'export MANPATH="$HOME/.local/share/man:$MANPATH"' >> "$RC"
+done
+
+echo ""
+echo "Done! Run:"
+echo "  source ~/.bashrc"
+echo "  netcup-cli login"
+echo "  netcup-cli --help"
+echo "  man netcup-cli"
