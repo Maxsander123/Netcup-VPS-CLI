@@ -49,7 +49,7 @@ source ~/.bashrc
 
 ### Requirements
 
-- Python 3.9+
+- Python 3.8+
 - `python3-venv` (for install.sh) or installed automatically via apt
 
 ## Usage

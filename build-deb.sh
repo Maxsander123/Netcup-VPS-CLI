@@ -21,7 +21,7 @@ Version: ${VERSION}
 Section: utils
 Priority: optional
 Architecture: all
-Depends: python3 (>= 3.9), python3-venv, python3-pip
+Depends: python3 (>= 3.8), python3-venv, python3-pip
 Maintainer: Maxsander123 <https://github.com/Maxsander123>
 Homepage: https://github.com/Maxsander123/Netcup-VPS-CLI
 Description: CLI tool to manage Netcup VPS via the SCP REST API

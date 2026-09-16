@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Netcup VPS CLI — manage Netcup VPS via the SCP REST API."""
+from __future__ import annotations
 
 import atexit
 import ipaddress
