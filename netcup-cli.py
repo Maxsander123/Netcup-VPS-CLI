@@ -955,6 +955,81 @@ def sshkeys_list(as_json):
     console.print(table)
     console.print("\nUse [bold]--ssh-key ID[/bold] with [bold]netcup-cli install run[/bold] to inject keys.")
 
+# ── VNC console ───────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.argument("server")
+@click.option("--browser", is_flag=True, default=True, show_default=True,
+              help="Open VNC in default browser (default).")
+@click.option("--url-only", is_flag=True, help="Just print the VNC URL, don't open it.")
+def vnc(server, browser, url_only):
+    """Open the VNC console for SERVER in the browser.
+
+    Example:
+
+        netcup-cli vnc head-server
+        netcup-cli vnc head-server --url-only
+    """
+    import subprocess, shutil
+
+    sid  = resolve(server)
+    data = api_get(f"/servers/{sid}")
+    name = data.get("name", str(sid))
+
+    # Try REST API for a VNC token/URL first (silent — 404 is expected)
+    vnc_url = None
+    for path in (f"/servers/{sid}/vnc", f"/servers/{sid}/console"):
+        r = requests.get(f"{API_BASE}{path}", headers=_headers())
+        if r.ok:
+            resp    = r.json()
+            vnc_url = resp.get("url") or resp.get("websocketUrl") or resp.get("token")
+            if vnc_url:
+                break
+
+    if not vnc_url:
+        # Fall back to SCP web UI VNC page
+        # The SCP passes the Bearer token via URL fragment so we embed it
+        token = get_access_token()
+        vnc_url = (
+            f"https://www.servercontrolpanel.de/"
+            f"?access_token={token}"
+            f"#/server/{name}/vnc"
+        )
+        # Simpler fallback without token (user must be logged in to SCP)
+        vnc_url_simple = f"https://www.servercontrolpanel.de/#/server/{name}/vnc"
+
+        if url_only:
+            console.print(vnc_url_simple)
+            return
+
+        console.print(f"[dim]No VNC API endpoint — opening SCP web console…[/dim]")
+        _open_browser(vnc_url_simple)
+        return
+
+    if url_only:
+        console.print(vnc_url)
+        return
+
+    _open_browser(vnc_url)
+
+
+def _open_browser(url: str) -> None:
+    """Open URL in the user's default browser."""
+    import subprocess, shutil, os
+
+    console.print(f"Opening: [bold cyan]{url}[/bold cyan]")
+
+    # Try common openers in order
+    for opener in ("xdg-open", "sensible-browser", "x-www-browser", "firefox", "chromium-browser"):
+        if shutil.which(opener):
+            subprocess.Popen([opener, url],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+            return
+
+    # No GUI browser found — just print
+    console.print("[yellow]No browser found. Copy the URL above into your browser.[/yellow]")
+
 # ── help / man pages ──────────────────────────────────────────────────────────
 
 @cli.command("commands")
