@@ -108,4 +108,4 @@ man netcup-cli-vnc
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+[PolyForm Noncommercial License 1.0.0](LICENSE) — free to use, share, and modify for any non-commercial purpose. Commercial use is not permitted.
