@@ -56,54 +56,48 @@ def get_access_token() -> str:
     return tok["access_token"]
 
 
-def _headers() -> dict:
-    return {"Authorization": f"Bearer {get_access_token()}", "Accept": "application/json"}
+def _headers(patch: bool = False) -> dict:
+    h = {"Authorization": f"Bearer {get_access_token()}", "Accept": "application/json"}
+    if patch:
+        h["Content-Type"] = "application/merge-patch+json"
+    return h
 
-# ── API ───────────────────────────────────────────────────────────────────────
+# ── API helpers ───────────────────────────────────────────────────────────────
 
 def api_get(path: str, params: dict | None = None):
     r = requests.get(f"{API_BASE}{path}", headers=_headers(), params=params)
     _check(r); return r.json()
 
-
 def api_post(path: str, body: dict):
     r = requests.post(f"{API_BASE}{path}", headers=_headers(), json=body)
     _check(r); return r.json() if r.content else {}
 
-
 def api_patch(path: str, body: dict):
-    h = _headers(); h["Content-Type"] = "application/merge-patch+json"
-    r = requests.patch(f"{API_BASE}{path}", headers=h, json=body)
+    r = requests.patch(f"{API_BASE}{path}", headers=_headers(patch=True), json=body)
     _check(r); return r.json() if r.content else {}
-
 
 def api_put(path: str, body: dict):
     r = requests.put(f"{API_BASE}{path}", headers=_headers(), json=body)
     _check(r); return r.json() if r.content else {}
 
-
 def api_delete(path: str):
     r = requests.delete(f"{API_BASE}{path}", headers=_headers())
-    _check(r)
-
+    _check(r); return r.json() if r.content else {}
 
 def _check(r: requests.Response):
     if not r.ok:
-        try:
-            msg = r.json()
-        except Exception:
-            msg = r.text
+        try:    msg = r.json()
+        except: msg = r.text
         console.print(f"[red]API {r.status_code}:[/red] {msg}")
         sys.exit(1)
 
+# ── helpers ───────────────────────────────────────────────────────────────────
 
 def _servers() -> list[dict]:
     data = api_get("/servers")
     return data if isinstance(data, list) else data.get("data", [])
 
-
 def resolve(name_or_id: str) -> int:
-    """Resolve name/nickname/hostname → numeric server id."""
     try:
         return int(name_or_id)
     except ValueError:
@@ -114,27 +108,42 @@ def resolve(name_or_id: str) -> int:
     console.print(f"[red]Server not found:[/red] {name_or_id}")
     sys.exit(1)
 
-
 def _state(s: dict) -> str:
     return s.get("serverLiveInfo", {}).get("state", "?")
-
 
 def _ipv4(s: dict) -> str:
     addrs = s.get("ipv4Addresses", [])
     return addrs[0]["ip"] if addrs else ""
 
-
 def _ipv6(s: dict) -> str:
     for a in s.get("ipv6Addresses", []):
-        prefix = a.get("networkPrefix", "")
-        if prefix and not prefix.startswith("fe80"):
-            return prefix
+        p = a.get("networkPrefix", "")
+        if p and not p.startswith("fe80"):
+            return f"{p}/{a.get('networkPrefixLength','')}"
     return ""
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
+def wait_task(task_uuid: str, label: str = "Task") -> dict:
+    """Poll /tasks/{uuid} until finished."""
+    console.print(f"[dim]{label} {task_uuid[:8]}…[/dim] ", end="")
+    while True:
+        t = api_get(f"/tasks/{task_uuid}")
+        state = t.get("state", "PENDING")
+        pct   = t.get("progressInPercent", 0)
+        if state == "FINISHED":
+            print(f" [done]")
+            console.print(f"[green]✓[/green] {label} finished.")
+            return t
+        if state == "FAILED":
+            print("")
+            console.print(f"[red]✗ {label} failed:[/red] {t}")
+            sys.exit(1)
+        print(f"\r[dim]{label} {task_uuid[:8]}…[/dim] {pct}%  ", end="", flush=True)
+        time.sleep(3)
+
+# ── CLI root ──────────────────────────────────────────────────────────────────
 
 @click.group()
-@click.version_option("1.1.0", prog_name="netcup-cli")
+@click.version_option("1.2.0", prog_name="netcup-cli")
 def cli():
     """Netcup VPS CLI — control your Netcup VPS from the terminal."""
 
@@ -191,10 +200,10 @@ def logout():
 
 @cli.command("list")
 @click.option("--json", "as_json", is_flag=True, help="Raw JSON output.")
-def list_servers(as_json):
+@click.option("--no-status", is_flag=True, help="Skip live status fetch (faster).")
+def list_servers(as_json, no_status):
     """List all VPS in your account."""
     servers = _servers()
-
     if as_json:
         click.echo(json.dumps(servers, indent=2)); return
 
@@ -206,19 +215,22 @@ def list_servers(as_json):
     table.add_column("Status",   justify="center")
 
     for s in servers:
-        sid    = str(s.get("id", ""))
-        host   = str(s.get("hostname", ""))
-        nick   = str(s.get("nickname", ""))
-        tmpl   = str(s.get("template", {}).get("name", ""))
-        # fetch live state (one request per server — skip if many)
-        try:
-            detail = api_get(f"/servers/{s['id']}")
-            state  = _state(detail).upper()
-        except SystemExit:
-            state = "?"
-        color = "green" if state == "RUNNING" else "red" if state in ("STOPPED", "OFF") else "yellow"
-        table.add_row(sid, host, nick, tmpl, f"[{color}]{state}[/{color}]")
-
+        state = "—"
+        color = "dim"
+        if not no_status:
+            try:
+                detail = api_get(f"/servers/{s['id']}")
+                state  = _state(detail).upper()
+                color  = "green" if state == "RUNNING" else "red" if state in ("STOPPED", "OFF") else "yellow"
+            except SystemExit:
+                state = "?"
+        table.add_row(
+            str(s.get("id", "")),
+            str(s.get("hostname", "")),
+            str(s.get("nickname", "")),
+            str(s.get("template", {}).get("name", "")),
+            f"[{color}]{state}[/{color}]",
+        )
     console.print(table)
 
 # ── info ──────────────────────────────────────────────────────────────────────
@@ -230,7 +242,6 @@ def info(server, as_json):
     """Show details for SERVER (id, hostname, or nickname)."""
     sid  = resolve(server)
     data = api_get(f"/servers/{sid}")
-
     if as_json:
         click.echo(json.dumps(data, indent=2)); return
 
@@ -242,24 +253,30 @@ def info(server, as_json):
     table.add_column("Key",   style="dim",  width=26)
     table.add_column("Value", style="bold")
 
-    table.add_row("ID",           str(data.get("id", "")))
-    table.add_row("Name",         data.get("name", ""))
-    table.add_row("Hostname",     data.get("hostname", ""))
-    table.add_row("Nickname",     data.get("nickname", ""))
-    table.add_row("Template",     data.get("template", {}).get("name", ""))
-    table.add_row("Architecture", data.get("architecture", ""))
-    table.add_row("State",        f"[{color}]{state}[/{color}]")
-    table.add_row("vCPU",         str(live.get("cpuCount", "")))
-    table.add_row("RAM (MiB)",    str(live.get("currentServerMemoryInMiB", "")))
-    table.add_row("Uptime (s)",   str(live.get("uptimeInSeconds", "")))
-    table.add_row("Location",     data.get("site", {}).get("city", ""))
-    table.add_row("IPv4",         _ipv4(data))
-    table.add_row("IPv6 prefix",  _ipv6(data))
+    def row(k, v): table.add_row(k, str(v) if v is not None else "—")
 
-    disks = live.get("disks", [])
-    for i, d in enumerate(disks):
-        table.add_row(f"Disk {i} (MiB)", f"{d.get('allocationInMiB','?')} used / {d.get('capacityInMiB','?')} total")
-
+    row("ID",           data.get("id", ""))
+    row("Name",         data.get("name", ""))
+    row("Hostname",     data.get("hostname", ""))
+    row("Nickname",     data.get("nickname", ""))
+    row("Template",     data.get("template", {}).get("name", ""))
+    row("Architecture", data.get("architecture", ""))
+    table.add_row("State", f"[{color}]{state}[/{color}]")
+    row("vCPU",         live.get("cpuCount", ""))
+    row("RAM (MiB)",    live.get("currentServerMemoryInMiB", ""))
+    uptime = live.get("uptimeInSeconds", 0)
+    row("Uptime",       f"{uptime // 3600}h {(uptime % 3600) // 60}m")
+    row("Location",     data.get("site", {}).get("city", ""))
+    row("IPv4",         _ipv4(data))
+    row("IPv6 prefix",  _ipv6(data))
+    row("Snapshots",    data.get("snapshotCount", 0))
+    row("Rescue active",data.get("rescueSystemActive", False))
+    row("Autostart",    live.get("autostart", ""))
+    row("Machine type", live.get("machineType", ""))
+    row("UEFI",         live.get("uefi", ""))
+    for i, d in enumerate(live.get("disks", [])):
+        row(f"Disk {i} ({d.get('dev','?')})",
+            f"{d.get('allocationInMiB','?')} / {d.get('capacityInMiB','?')} MiB used")
     console.print(table)
 
 # ── ips ───────────────────────────────────────────────────────────────────────
@@ -271,33 +288,34 @@ def ips(server):
     sid  = resolve(server)
     data = api_get(f"/servers/{sid}")
 
+    # enrich with rDNS from interfaces
+    iface_map: dict[str, dict] = {}
+    try:
+        for iface in api_get(f"/servers/{sid}/interfaces"):
+            for a in iface.get("ipv4Addresses", []):
+                iface_map[a.get("ip", "")] = {
+                    "rdns": a.get("rdns", ""),
+                    "gw":   a.get("gateway", ""),
+                }
+    except SystemExit:
+        pass
+
     table = Table(title=f"IPs — {server}", box=box.ROUNDED)
     table.add_column("Type",    style="cyan", no_wrap=True)
     table.add_column("Address", style="green")
     table.add_column("Gateway", style="dim")
     table.add_column("rDNS",    style="dim")
 
-    # pull rDNS from interfaces endpoint which has more detail
-    iface_map: dict[str, dict] = {}
-    try:
-        ifaces = api_get(f"/servers/{sid}/interfaces")
-        ifaces = ifaces if isinstance(ifaces, list) else []
-        for iface in ifaces:
-            for a in iface.get("ipv4Addresses", []):
-                iface_map[a["ip"]] = {"rdns": a.get("rdns", ""), "gw": a.get("gateway", "")}
-    except SystemExit:
-        pass
-
     for a in data.get("ipv4Addresses", []):
         ip  = a.get("ip", "")
-        gw  = a.get("gateway", "")
+        gw  = iface_map.get(ip, {}).get("gw", a.get("gateway", ""))
         rdns = iface_map.get(ip, {}).get("rdns", "")
         table.add_row("IPv4", ip, gw, str(rdns) if rdns else "")
 
     for a in data.get("ipv6Addresses", []):
         prefix = a.get("networkPrefix", "")
-        gw     = a.get("gateway", "")
-        table.add_row("IPv6 prefix", f"{prefix}/{a.get('networkPrefixLength','')}", gw, "")
+        length = a.get("networkPrefixLength", "")
+        table.add_row("IPv6 prefix", f"{prefix}/{length}", a.get("gateway", ""), "")
 
     console.print(table)
 
@@ -314,11 +332,10 @@ def start(server):
 
 @cli.command()
 @click.argument("server")
-@click.option("-f", "--force", is_flag=True, help="Skip confirmation.")
+@click.option("-f", "--force", is_flag=True)
 def stop(server, force):
     """Graceful ACPI shutdown of SERVER."""
-    if not force and not Confirm.ask(f"Shutdown [bold]{server}[/bold]?"):
-        return
+    if not force and not Confirm.ask(f"Shutdown [bold]{server}[/bold]?"): return
     sid = resolve(server)
     api_post(f"/servers/{sid}/power", {"state": "OFF", "option": "POWEROFF"})
     console.print("[green]✓[/green] Shutdown command sent.")
@@ -326,11 +343,10 @@ def stop(server, force):
 
 @cli.command()
 @click.argument("server")
-@click.option("-f", "--force", is_flag=True, help="Skip confirmation.")
+@click.option("-f", "--force", is_flag=True)
 def reset(server, force):
-    """Hard reset SERVER (like pressing the reset button)."""
-    if not force and not Confirm.ask(f"[red]Hard reset[/red] [bold]{server}[/bold]?"):
-        return
+    """Hard reset SERVER."""
+    if not force and not Confirm.ask(f"[red]Hard reset[/red] [bold]{server}[/bold]?"): return
     sid = resolve(server)
     api_post(f"/servers/{sid}/power", {"state": "ON", "option": "RESET"})
     console.print("[green]✓[/green] Reset command sent.")
@@ -338,11 +354,10 @@ def reset(server, force):
 
 @cli.command()
 @click.argument("server")
-@click.option("-f", "--force", is_flag=True, help="Skip confirmation.")
+@click.option("-f", "--force", is_flag=True)
 def poweroff(server, force):
     """Cut power to SERVER immediately."""
-    if not force and not Confirm.ask(f"[red]Hard power-off[/red] [bold]{server}[/bold]?"):
-        return
+    if not force and not Confirm.ask(f"[red]Hard power-off[/red] [bold]{server}[/bold]?"): return
     sid = resolve(server)
     api_post(f"/servers/{sid}/power", {"state": "OFF", "option": "POWEROFF"})
     console.print("[green]✓[/green] Power-off command sent.")
@@ -350,14 +365,226 @@ def poweroff(server, force):
 
 @cli.command()
 @click.argument("server")
-@click.option("-f", "--force", is_flag=True, help="Skip confirmation.")
+@click.option("-f", "--force", is_flag=True)
 def powercycle(server, force):
     """Power cycle SERVER (hard off then on)."""
-    if not force and not Confirm.ask(f"Power cycle [bold]{server}[/bold]?"):
-        return
+    if not force and not Confirm.ask(f"Power cycle [bold]{server}[/bold]?"): return
     sid = resolve(server)
     api_post(f"/servers/{sid}/power", {"state": "ON", "option": "POWERCYCLE"})
     console.print("[green]✓[/green] Power cycle command sent.")
+
+# ── disks ─────────────────────────────────────────────────────────────────────
+
+@cli.group()
+def disks():
+    """Disk management."""
+
+
+@disks.command("list")
+@click.argument("server")
+@click.option("--json", "as_json", is_flag=True)
+def disks_list(server, as_json):
+    """List disks for SERVER."""
+    sid  = resolve(server)
+    data = api_get(f"/servers/{sid}/disks")
+    data = data if isinstance(data, list) else [data]
+    if as_json:
+        click.echo(json.dumps(data, indent=2)); return
+
+    table = Table(title=f"Disks — {server}", box=box.ROUNDED)
+    table.add_column("Device",        style="cyan")
+    table.add_column("Driver",        style="dim")
+    table.add_column("Used (MiB)",    justify="right", style="yellow")
+    table.add_column("Total (MiB)",   justify="right", style="green")
+    table.add_column("Used %",        justify="right")
+
+    for d in data:
+        alloc = d.get("allocationInMiB", 0)
+        cap   = d.get("capacityInMiB", 0)
+        pct   = f"{alloc/cap*100:.1f}%" if cap else "?"
+        table.add_row(
+            d.get("name", ""),
+            d.get("storageDriver", ""),
+            str(alloc),
+            str(cap),
+            pct,
+        )
+    console.print(table)
+
+
+@disks.command("get")
+@click.argument("server")
+@click.argument("disk")
+@click.option("--json", "as_json", is_flag=True)
+def disks_get(server, disk, as_json):
+    """Show details for DISK on SERVER."""
+    sid  = resolve(server)
+    data = api_get(f"/servers/{sid}/disks/{disk}")
+    if as_json:
+        click.echo(json.dumps(data, indent=2)); return
+    table = Table(box=box.SIMPLE, show_header=False)
+    table.add_column("Key",   style="dim", width=20)
+    table.add_column("Value", style="bold")
+    for k, v in data.items():
+        table.add_row(k, str(v))
+    console.print(table)
+
+# ── snapshots ─────────────────────────────────────────────────────────────────
+
+@cli.group()
+def snapshot():
+    """Snapshot management."""
+
+
+@snapshot.command("list")
+@click.argument("server")
+@click.option("--json", "as_json", is_flag=True)
+def snap_list(server, as_json):
+    """List snapshots for SERVER."""
+    sid  = resolve(server)
+    data = api_get(f"/servers/{sid}/snapshots")
+    data = data if isinstance(data, list) else []
+    if as_json:
+        click.echo(json.dumps(data, indent=2)); return
+    if not data:
+        console.print("[dim]No snapshots.[/dim]"); return
+
+    table = Table(title=f"Snapshots — {server}", box=box.ROUNDED)
+    table.add_column("Name",     style="cyan", no_wrap=True)
+    table.add_column("UUID",     style="dim")
+    table.add_column("State",    justify="center")
+    table.add_column("Created",  style="dim")
+    table.add_column("Online")
+    table.add_column("Exported")
+    table.add_column("Size (KiB)", justify="right")
+
+    for s in data:
+        state = str(s.get("state", "?")).upper()
+        color = "green" if state == "AVAILABLE" else "yellow"
+        table.add_row(
+            s.get("name", ""),
+            s.get("uuid", "")[:12] + "…",
+            f"[{color}]{state}[/{color}]",
+            str(s.get("creationTime", ""))[:19],
+            "yes" if s.get("online") else "no",
+            "yes" if s.get("exported") else "no",
+            str(s.get("exportedSizeInKiB", "")),
+        )
+    console.print(table)
+
+
+@snapshot.command("create")
+@click.argument("server")
+@click.argument("name")
+@click.option("--disk", default="vda", show_default=True, help="Disk to snapshot.")
+@click.option("--wait", is_flag=True, help="Wait until snapshot is ready.")
+def snap_create(server, name, disk, wait):
+    """Create snapshot NAME for SERVER."""
+    sid    = resolve(server)
+    result = api_post(f"/servers/{sid}/snapshots", {"diskName": disk, "name": name})
+    task_id = result.get("uuid", result.get("id", ""))
+    console.print(f"[green]✓[/green] Snapshot creation started. Task: {task_id}")
+    if wait and task_id:
+        wait_task(task_id, "Snapshot")
+
+
+@snapshot.command("delete")
+@click.argument("server")
+@click.argument("name")
+@click.option("-f", "--force", is_flag=True)
+@click.option("--wait", is_flag=True)
+def snap_delete(server, name, force, wait):
+    """Delete snapshot NAME from SERVER."""
+    if not force and not Confirm.ask(f"[red]Delete[/red] snapshot [bold]{name}[/bold] on {server}?"): return
+    sid    = resolve(server)
+    result = api_delete(f"/servers/{sid}/snapshots/{name}")
+    task_id = (result or {}).get("uuid", (result or {}).get("id", ""))
+    console.print(f"[green]✓[/green] Delete started.")
+    if wait and task_id:
+        wait_task(task_id, "Delete snapshot")
+
+# ── logs ──────────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.argument("server")
+@click.option("-n", "--lines", default=20, show_default=True, help="Number of log entries.")
+@click.option("--json", "as_json", is_flag=True)
+def logs(server, lines, as_json):
+    """Show activity log for SERVER."""
+    sid  = resolve(server)
+    data = api_get(f"/servers/{sid}/logs")
+    data = data if isinstance(data, list) else []
+    data = data[:lines]
+    if as_json:
+        click.echo(json.dumps(data, indent=2)); return
+    if not data:
+        console.print("[dim]No log entries.[/dim]"); return
+
+    table = Table(title=f"Logs — {server}", box=box.ROUNDED)
+    table.add_column("Date",    style="dim", no_wrap=True)
+    table.add_column("Type",    style="cyan", no_wrap=True)
+    table.add_column("User",    style="dim")
+    table.add_column("Message", style="bold")
+
+    for e in data:
+        ltype = str(e.get("type", "")).upper()
+        color = "red" if ltype == "ERROR" else "yellow" if ltype == "WARNING" else "cyan"
+        user  = e.get("executingUser", {})
+        if isinstance(user, dict):
+            user_str = f"{user.get('firstname','')} {user.get('lastname','')}".strip() or user.get("username", "")
+        else:
+            user_str = str(user)
+        table.add_row(
+            str(e.get("date", ""))[:19],
+            f"[{color}]{ltype}[/{color}]",
+            user_str,
+            str(e.get("message", "")),
+        )
+    console.print(table)
+
+# ── iso ───────────────────────────────────────────────────────────────────────
+
+@cli.group()
+def iso():
+    """ISO management."""
+
+
+@iso.command("status")
+@click.argument("server")
+@click.option("--json", "as_json", is_flag=True)
+def iso_status(server, as_json):
+    """Show ISO status for SERVER."""
+    sid  = resolve(server)
+    data = api_get(f"/servers/{sid}/iso")
+    if as_json:
+        click.echo(json.dumps(data, indent=2)); return
+    attached = data.get("isoAttached", False)
+    iso_name = data.get("iso") or "—"
+    status   = "[green]attached[/green]" if attached else "[dim]none[/dim]"
+    console.print(f"ISO attached: {status}")
+    if attached:
+        console.print(f"ISO: [bold]{iso_name}[/bold]")
+
+# ── tasks ─────────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.argument("task_uuid")
+@click.option("--wait", is_flag=True, help="Poll until finished.")
+@click.option("--json", "as_json", is_flag=True)
+def task(task_uuid, wait, as_json):
+    """Show or wait for a background TASK_UUID."""
+    if wait:
+        wait_task(task_uuid, "Task"); return
+    data = api_get(f"/tasks/{task_uuid}")
+    if as_json:
+        click.echo(json.dumps(data, indent=2)); return
+    table = Table(box=box.SIMPLE, show_header=False)
+    table.add_column("Key",   style="dim", width=22)
+    table.add_column("Value", style="bold")
+    for k, v in data.items():
+        if not isinstance(v, (dict, list)):
+            table.add_row(k, str(v))
+    console.print(table)
 
 # ── network ───────────────────────────────────────────────────────────────────
 
@@ -371,12 +598,20 @@ def network():
 @click.option("--json", "as_json", is_flag=True)
 def net_list(server, as_json):
     """List network interfaces for SERVER."""
-    sid   = resolve(server)
+    sid    = resolve(server)
     ifaces = api_get(f"/servers/{sid}/interfaces")
     ifaces = ifaces if isinstance(ifaces, list) else []
-
     if as_json:
         click.echo(json.dumps(ifaces, indent=2)); return
+
+    # traffic data lives in serverLiveInfo.interfaces, keyed by mac
+    traffic: dict[str, dict] = {}
+    try:
+        live_ifaces = api_get(f"/servers/{sid}").get("serverLiveInfo", {}).get("interfaces", [])
+        for li in live_ifaces:
+            traffic[li.get("mac", "")] = li
+    except SystemExit:
+        pass
 
     table = Table(title=f"Interfaces — {server}", box=box.ROUNDED)
     table.add_column("MAC",         style="cyan",  no_wrap=True)
@@ -384,18 +619,26 @@ def net_list(server, as_json):
     table.add_column("Speed (Mb)",  justify="right")
     table.add_column("IPv4",        style="green")
     table.add_column("IPv6 prefix", style="dim")
+    table.add_column("RX/mo (MiB)", justify="right", style="dim")
+    table.add_column("TX/mo (MiB)", justify="right", style="dim")
 
     for iface in ifaces:
-        mac    = iface.get("mac", "")
-        driver = iface.get("driver", "")
-        speed  = str(iface.get("speedInMBits", ""))
-        ipv4s  = ", ".join(a["ip"] for a in iface.get("ipv4Addresses", []) if a.get("ip"))
-        ipv6s  = ", ".join(
+        mac   = iface.get("mac", "")
+        ipv4s = ", ".join(a["ip"] for a in iface.get("ipv4Addresses", []) if a.get("ip"))
+        ipv6s = ", ".join(
             a["networkPrefix"] for a in iface.get("ipv6Addresses", [])
             if a.get("networkPrefix") and not a.get("linkLocal")
         )
-        table.add_row(mac, driver, speed, ipv4s or "—", ipv6s or "—")
-
+        t = traffic.get(mac, {})
+        table.add_row(
+            mac,
+            iface.get("driver", ""),
+            str(iface.get("speedInMBits", "")),
+            ipv4s or "—",
+            ipv6s or "—",
+            str(t.get("rxMonthlyInMiB", "—")),
+            str(t.get("txMonthlyInMiB", "—")),
+        )
     console.print(table)
 
 
@@ -416,8 +659,7 @@ def net_add(server, vlan, driver):
 @click.option("-f", "--force", is_flag=True)
 def net_remove(server, mac, force):
     """Remove interface by MAC from SERVER."""
-    if not force and not Confirm.ask(f"Remove [bold]{mac}[/bold] from {server}?"):
-        return
+    if not force and not Confirm.ask(f"Remove [bold]{mac}[/bold] from {server}?"): return
     sid = resolve(server)
     api_delete(f"/servers/{sid}/interfaces/{mac}")
     console.print(f"[green]✓[/green] Interface {mac} removed.")
@@ -426,22 +668,22 @@ def net_remove(server, mac, force):
 
 @cli.group()
 def rdns():
-    """Reverse DNS management."""
+    """Reverse DNS management (IPv4 and IPv6)."""
 
 
 @rdns.command("get")
 @click.argument("ip")
 def rdns_get(ip):
-    """Get rDNS for IP."""
+    """Get rDNS for IPv4 IP."""
     data = api_get(f"/rdns/ipv4/{ip}")
-    console.print(data)
+    console.print(data.get("rdns") or "[dim]no rDNS set[/dim]")
 
 
 @rdns.command("set")
 @click.argument("ip")
 @click.argument("hostname")
 def rdns_set(ip, hostname):
-    """Set rDNS for IP."""
+    """Set rDNS for IPv4 IP."""
     api_put(f"/rdns/ipv4/{ip}", {"hostname": hostname})
     console.print(f"[green]✓[/green] rDNS {ip} → {hostname}")
 
@@ -450,11 +692,37 @@ def rdns_set(ip, hostname):
 @click.argument("ip")
 @click.option("-f", "--force", is_flag=True)
 def rdns_delete(ip, force):
-    """Delete rDNS for IP."""
-    if not force and not Confirm.ask(f"Delete rDNS for [bold]{ip}[/bold]?"):
-        return
+    """Delete rDNS for IPv4 IP."""
+    if not force and not Confirm.ask(f"Delete rDNS for [bold]{ip}[/bold]?"): return
     api_delete(f"/rdns/ipv4/{ip}")
     console.print(f"[green]✓[/green] rDNS for {ip} deleted.")
+
+
+@rdns.command("get6")
+@click.argument("prefix")
+def rdns_get6(prefix):
+    """Get rDNS for IPv6 PREFIX."""
+    data = api_get(f"/rdns/ipv6/{prefix}")
+    console.print(data.get("rdns") or "[dim]no rDNS set[/dim]")
+
+
+@rdns.command("set6")
+@click.argument("prefix")
+@click.argument("hostname")
+def rdns_set6(prefix, hostname):
+    """Set rDNS for IPv6 PREFIX."""
+    api_put(f"/rdns/ipv6/{prefix}", {"hostname": hostname})
+    console.print(f"[green]✓[/green] rDNS {prefix} → {hostname}")
+
+
+@rdns.command("delete6")
+@click.argument("prefix")
+@click.option("-f", "--force", is_flag=True)
+def rdns_delete6(prefix, force):
+    """Delete rDNS for IPv6 PREFIX."""
+    if not force and not Confirm.ask(f"Delete rDNS for [bold]{prefix}[/bold]?"): return
+    api_delete(f"/rdns/ipv6/{prefix}")
+    console.print(f"[green]✓[/green] rDNS for {prefix} deleted.")
 
 # ── rename ────────────────────────────────────────────────────────────────────
 
@@ -467,24 +735,32 @@ def rename(server, nickname):
     api_patch(f"/servers/{sid}", {"nickname": nickname})
     console.print(f"[green]✓[/green] Nickname → [bold]{nickname}[/bold]")
 
+
+@cli.command()
+@click.argument("server")
+@click.argument("hostname")
+def set_hostname(server, hostname):
+    """Set hostname for SERVER."""
+    sid = resolve(server)
+    api_patch(f"/servers/{sid}", {"hostname": hostname})
+    console.print(f"[green]✓[/green] Hostname → [bold]{hostname}[/bold]")
+
 # ── reinstall ─────────────────────────────────────────────────────────────────
 
 @cli.command()
 @click.argument("server")
 def reinstall(server):
-    """Reinstall SERVER with a new OS.
+    """Open SCP web UI for OS reinstall.
 
-    Opens the Netcup SCP web interface for this server directly.
-    (The reinstall endpoint is not publicly available in the REST API.)
+    The reinstall endpoint is not in the public REST API.
     """
     sid  = resolve(server)
     data = api_get(f"/servers/{sid}")
     name = data.get("name", str(sid))
     url  = f"https://www.servercontrolpanel.de/SCP/VServer#server={name}&action=reinstall"
     console.print(
-        f"[yellow]The reinstall endpoint is not exposed in the public REST API.[/yellow]\n"
-        f"Open the SCP web UI for this server:\n\n"
-        f"  [bold cyan]{url}[/bold cyan]\n"
+        f"[yellow]Reinstall is not available via the public REST API.[/yellow]\n"
+        f"Open the SCP web UI:\n\n  [bold cyan]{url}[/bold cyan]\n"
     )
 
 # ── entry point ───────────────────────────────────────────────────────────────
