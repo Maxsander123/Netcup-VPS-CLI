@@ -1092,6 +1092,44 @@ def sshkeys_list(as_json):
     console.print(table)
     console.print("\nUse [bold]--ssh-key ID[/bold] with [bold]netcup-cli install run[/bold] to inject keys.")
 
+
+@sshkeys.command("add")
+@click.argument("name")
+@click.option("--pubkey", default="", help="Public key string (e.g. 'ssh-ed25519 AAAA...').")
+@click.option("--file",   "key_file", default="", type=click.Path(exists=True),
+              help="Path to a .pub file (alternative to --pubkey).")
+def sshkeys_add(name, pubkey, key_file):
+    """Add an SSH public key to your account.
+
+    Example:
+
+        netcup-cli sshkeys add "My Laptop" --file ~/.ssh/id_ed25519.pub
+        netcup-cli sshkeys add "My Laptop" --pubkey "ssh-ed25519 AAAA..."
+    """
+    if key_file and pubkey:
+        raise click.UsageError("Use either --pubkey or --file, not both.")
+    if key_file:
+        with open(key_file) as f:
+            pubkey = f.read().strip()
+    if not pubkey:
+        raise click.UsageError("Provide a public key via --pubkey or --file.")
+    uid  = _get_user_id()
+    data = api_post(f"/users/{uid}/ssh-keys", {"name": name, "key": pubkey})
+    kid  = (data or {}).get("id", "?")
+    console.print(f"[green]✓[/green] SSH key [bold]{name}[/bold] added (ID: {kid}).")
+
+
+@sshkeys.command("delete")
+@click.argument("key_id", type=int)
+@click.option("-f", "--force", is_flag=True, help="Skip confirmation.")
+def sshkeys_delete(key_id, force):
+    """Delete SSH key KEY_ID from your account."""
+    if not force and not Confirm.ask(f"Delete SSH key [bold]{key_id}[/bold]?"):
+        return
+    uid = _get_user_id()
+    api_delete(f"/users/{uid}/ssh-keys/{key_id}")
+    console.print(f"[green]✓[/green] SSH key {key_id} deleted.")
+
 # ── VNC console ───────────────────────────────────────────────────────────────
 
 @cli.command()
