@@ -19,7 +19,7 @@ from rich import box
 from rich.prompt import Confirm
 
 AUTH_BASE       = "https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect"
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 API_BASE        = "https://www.servercontrolpanel.de/scp-core/api/v1"
 DEVICE_ENDPOINT = f"{AUTH_BASE}/auth/device"
 TOKEN_ENDPOINT  = f"{AUTH_BASE}/token"
