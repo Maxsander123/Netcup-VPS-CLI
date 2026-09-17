@@ -757,7 +757,7 @@ def net_list(server, as_json):
 def net_add(server, vlan, driver):
     """Add a network interface to SERVER."""
     sid    = resolve(server)
-    result = api_post(f"/servers/{sid}/interfaces", {"vlan_id": vlan, "driver": driver})
+    result = api_post(f"/servers/{sid}/interfaces", {"vlanId": vlan, "driver": driver})
     console.print(f"[green]✓[/green] Interface added: {result}")
 
 
