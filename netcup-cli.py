@@ -1096,7 +1096,7 @@ def sshkeys_list(as_json):
 @sshkeys.command("add")
 @click.argument("name")
 @click.option("--pubkey", default="", help="Public key string (e.g. 'ssh-ed25519 AAAA...').")
-@click.option("--file",   "key_file", default="", type=click.Path(exists=True),
+@click.option("--file",   "key_file", default=None, type=click.Path(exists=True),
               help="Path to a .pub file (alternative to --pubkey).")
 def sshkeys_add(name, pubkey, key_file):
     """Add an SSH public key to your account.
