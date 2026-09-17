@@ -19,7 +19,7 @@ from rich import box
 from rich.prompt import Confirm
 
 AUTH_BASE       = "https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect"
-VERSION = "2.0.1"
+VERSION = "2.0.2"
 API_BASE        = "https://www.servercontrolpanel.de/scp-core/api/v1"
 DEVICE_ENDPOINT = f"{AUTH_BASE}/auth/device"
 TOKEN_ENDPOINT  = f"{AUTH_BASE}/token"
@@ -795,7 +795,7 @@ def rdns_get(ip):
 def rdns_set(ip, hostname):
     """Set rDNS for IPv4 IP."""
     _validate_ipv4(ip)
-    api_put(f"/rdns/ipv4/{ip}", {"hostname": hostname})
+    api_post("/rdns/ipv4", {"ip": ip, "rdns": hostname})
     console.print(f"[green]✓[/green] rDNS {ip} → {hostname}")
 
 
@@ -825,7 +825,7 @@ def rdns_get6(prefix):
 def rdns_set6(prefix, hostname):
     """Set rDNS for IPv6 PREFIX."""
     _validate_ipv6_prefix(prefix)
-    api_put(f"/rdns/ipv6/{prefix}", {"hostname": hostname})
+    api_post("/rdns/ipv6", {"ip": prefix, "rdns": hostname})
     console.print(f"[green]✓[/green] rDNS {prefix} → {hostname}")
 
 
@@ -1210,7 +1210,7 @@ def list_commands(ctx):
     root = ctx.find_root()
     cli_cmd = root.command
 
-    console.print(f"\n[bold]netcup-cli[/bold] — Netcup VPS CLI v1.8.0\n")
+    console.print(f"\n[bold]netcup-cli[/bold] — Netcup VPS CLI v{VERSION}\n")
 
     def print_group(cmd, prefix=""):
         if hasattr(cmd, 'commands'):
