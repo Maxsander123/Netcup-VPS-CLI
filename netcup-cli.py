@@ -1195,19 +1195,7 @@ def ssh_cmd(server, user, port, ip):
     """
     sid = resolve(server)
     if not ip:
-        ifaces = api_get(f"/servers/{sid}/interfaces")
-        for iface in ifaces:
-            for addr in iface.get("ipAddresses", []):
-                candidate = addr.get("ip", "")
-                if addr.get("version") == 4 and not candidate.startswith(
-                    ("10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.",
-                     "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
-                     "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.")
-                ):
-                    ip = candidate
-                    break
-            if ip:
-                break
+        ip = _ipv4(api_get(f"/servers/{sid}"))
     if not ip:
         raise click.ClickException("No public IPv4 found — use --ip to specify one manually.")
     console.print(f"[dim]Connecting: ssh {user}@{ip} -p {port}[/dim]")
